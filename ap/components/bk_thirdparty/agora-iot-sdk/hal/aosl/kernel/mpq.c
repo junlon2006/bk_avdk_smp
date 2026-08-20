@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 18th, 2018
+/***************************************************************************
  * Module:	Multiplex queue implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #undef _GNU_SOURCE
 #define _GNU_SOURCE
 #include <stdio.h>
@@ -35,69 +32,66 @@
 
 #define STATIC_MPQ_ID_POOL_SIZE 8
 
-static int __ctor_executed__ = 0;
 static k_rwlock_t mpq_table_lock;
-static struct mp_queue *static_mpq_table [STATIC_MPQ_ID_POOL_SIZE];
-static struct mp_queue **mpq_table = static_mpq_table;
-static int mpq_table_size = STATIC_MPQ_ID_POOL_SIZE;
 static bitmap_t *mpq_id_pool_bits = NULL;
+static struct mp_queue **mpq_table = NULL;
+static int mpq_table_size = 0;
 
 /* 0 is the only invalid life id, so init it to 1 */
 static uint16_t __mpqobj_life_id = 1;
 
 static uintptr_t __mpq_count = 0;
 
+#if defined(__linux__) || defined(__APPLE__)
+__thread struct mp_queue *__this_q;
+struct mp_queue *__get_this_mpq (void)
+{
+	return __this_q;
+}
+#else
 static k_tls_key_t __this_q_key = -1;
 struct mp_queue *__get_this_mpq (void)
 {
 	return (struct mp_queue *)k_tls_key_get (__this_q_key);
 }
+#endif
 
 static void mpq_init (void)
 {
-	int i;
-	mpq_id_pool_bits = bitmap_create(STATIC_MPQ_ID_POOL_SIZE);
-	for (i = 0; i < STATIC_MPQ_ID_POOL_SIZE; i++)
-		static_mpq_table [i] = NULL;
-
 	k_rwlock_init (&mpq_table_lock);
 
+	mpq_id_pool_bits = bitmap_create(STATIC_MPQ_ID_POOL_SIZE);
+	mpq_table = (struct mp_queue **)aosl_malloc_impl (sizeof (struct mp_queue *) * STATIC_MPQ_ID_POOL_SIZE);
+	if (!mpq_table || !mpq_id_pool_bits) {
+		abort ();
+	}
+	mpq_table_size = STATIC_MPQ_ID_POOL_SIZE;
+	memset (mpq_table, 0, sizeof (struct mp_queue *) * mpq_table_size);
+
+#if !defined(__linux__) && !defined(__APPLE__)
 	if (k_tls_key_create (&__this_q_key) != 0)
 		abort ();
+#endif
 }
 
 static void mpq_fini (void)
 {
-	/**
-	 * Do not destroy the global mpq_table_lock here,
-	 * because aosl is not a separate so library for
-	 * now, so it might be destructed before other
-	 * static C++ objects, and when the destructors
-	 * of the C++ objects do something relative with
-	 * aosl, we would encounter trouble.
-	 * -- Lionfore Hao Jul 31st, 2019
-	 **/
-
-	/**
-	 * For the same reason as above, do not destroy
-	 * the tls key here too.
-	 * k_tls_key_delete (__this_q_key);
-	 * __this_q_key = -1;
-	 * -- Lionfore Hao Jul 31st, 2019
-	 **/
-
-	k_tls_key_delete (__this_q_key);
-	__this_q_key = -1;
+	if (mpq_id_pool_bits) {
+		bitmap_destroy (mpq_id_pool_bits);
+		mpq_id_pool_bits = NULL;
+	}
+	if (mpq_table) {
+		for (int i = 0; i < mpq_table_size; i++) {
+			if (mpq_table [i] != NULL) {
+				AOSL_LOG_ERR("[dtor] exist q=%s", mpq_table[i]->q_name);
+			}
+		}
+		aosl_free (mpq_table);
+		mpq_table = NULL;
+		mpq_table_size = 0;
+	}
 
 	k_rwlock_destroy (&mpq_table_lock);
-	bitmap_destroy (mpq_id_pool_bits);
-	mpq_id_pool_bits = NULL;
-
-	if (mpq_table != static_mpq_table) {
-		aosl_free (mpq_table);
-		mpq_table = static_mpq_table;
-		mpq_table_size = STATIC_MPQ_ID_POOL_SIZE;
-	}
 }
 
 #define MPQ_ID_POOL_MAX_SIZE 2048
@@ -119,7 +113,7 @@ static int get_unused_mpq_id (void)
 			return -AOSL_EOVERFLOW;
 		}
 
-		new_table_size = mpq_table_size + 64;
+		new_table_size = mpq_table_size + 8;
 
 		new_bits = bitmap_create (new_table_size);
 		if (!new_bits) {
@@ -146,7 +140,7 @@ static int get_unused_mpq_id (void)
 		mpq_table_size = new_table_size;
 
 		mpq_id = bitmap_find_first_zero_bit (mpq_id_pool_bits);
-		BUG_ON (mpq_id >= 0);
+		BUG_ON (mpq_id < 0);
 	}
 
 	bitmap_set (mpq_id_pool_bits, mpq_id);
@@ -212,7 +206,6 @@ static void __mpq_id_install (int mpq_id, struct mp_queue *q)
 		/**
 		 * 0 is the only invalid life id, so reset it to
 		 * 1 if we the life id counter wrapped back.
-		 * -- Lionfore Hao Apr 13th, 2019
 		 **/
 		if (__mpqobj_life_id == 0)
 			__mpqobj_life_id = 1;
@@ -237,32 +230,6 @@ static int __mpq_id_uninstall (int mpq_id, struct mp_queue *q)
 	}
 	k_rwlock_wrunlock (&mpq_table_lock);
 	return err;
-}
-
-int __is_mpq_valid (aosl_mpq_t mpq_obj_id)
-{
-	int16_t mpq_id = get_mpq_id (mpq_obj_id);
-	struct mp_queue *q;
-
-	if (mpq_id < MIN_MPQ_ID)
-		return 0;
-
-	mpq_id -= MIN_MPQ_ID;
-
-	k_rwlock_rdlock (&mpq_table_lock);
-	if (mpq_id < mpq_table_size) {
-		q = mpq_table [mpq_id];
-		if (q != NULL) {
-			if (q->qid != mpq_obj_id) {
-				q = NULL;
-			}
-		}
-	} else {
-		q = NULL;
-	}
-	k_rwlock_rdunlock (&mpq_table_lock);
-
-	return q != NULL;
 }
 
 struct mp_queue *__mpq_get (aosl_mpq_t mpq_obj_id)
@@ -321,14 +288,14 @@ void os_drain_sigp (struct mp_queue *q)
 	for (;;) {
 		char buf [1024];
 		int finished = 0;
-		ssize_t err = aosl_hal_sk_read (q->sigp.piper, buf, sizeof buf);
+		isize_t err = aosl_hal_sk_read (q->sigp.piper, buf, sizeof buf);
 		if (err > 0) {
 			atomic_sub ((int)err, &q->kick_q_count);
 		}
 
 		// break when read finished
 		if (q->sigp.type == WAKEUP_TYPE_PIPE) {
-			finished = err < sizeof(buf);
+			finished = err < (isize_t)sizeof(buf);
 		} else if (q->sigp.type == WAKEUP_TYPE_SOCKET) {
 			finished = err < 1;
 		} else {
@@ -383,7 +350,6 @@ void mp_kick_q (struct mp_queue *q)
 	 *    q->terminated is visible globally now;
 	 * 2. Make sure the loading instruction of need_kicking is
 	 *    after it was written;
-	 * -- Lionfore Hao Sep 5th, 2019
 	 **/
 	aosl_mb ();
 	if (q->need_kicking) {
@@ -416,7 +382,6 @@ static int ____add_f (struct mp_queue *q, int no_fail, int sync, aosl_mpq_t done
 	 * If this thread is exiting now, we do not allow queue an f
 	 * with done qid is us, because the done action would fail
 	 * obviously.
-	 * -- Lionfore Hao Dec 19th, 2020
 	 **/
 	if (this_q != NULL && this_q->exiting && done_qid == this_q->qid)
 		return -AOSL_EPERM;
@@ -445,7 +410,6 @@ static int ____add_f (struct mp_queue *q, int no_fail, int sync, aosl_mpq_t done
 		 * target calling function has a chance to change input argv/data.
 		 * Changing argv/data in the target function does not make sense for the call
 		 * with '...' and '*_args' cases, only makes sense for call_argv/call_data.
-		 * -- Lionfore Hao Nov 23rd, 2018
 		 **/
 		fo->argv = (uintptr_t *)data;
 
@@ -488,7 +452,6 @@ static int ____add_f (struct mp_queue *q, int no_fail, int sync, aosl_mpq_t done
 				/**
 				 * Must consider the case of waking up by signal, so
 				 * a 'while' rather than 'if' employed here.
-				 * -- Lionfore Hao Jul 3rd, 2019
 				 **/
 				while (sync_obj.result != FO_EXECUTED)
 					k_cond_wait (&sync_obj.cond, &sync_obj.mutex);
@@ -511,7 +474,6 @@ static int ____add_f (struct mp_queue *q, int no_fail, int sync, aosl_mpq_t done
 		 * 1. The running this_q is just queuing an fo to q;
 		 * 2. The q is just destroying and waiting this_q;
 		 * Such as the audio capture q and the main q.
-		 * -- Lionfore Hao May 8th, 2019
 		 **/
 		if (this_q != NULL && this_q->terminated) {
 			err = -AOSL_EINTR;
@@ -591,7 +553,6 @@ void q_invoke_f (struct mp_queue *q, aosl_mpq_t done_qid, aosl_refobj_t robj, co
 	/**
 	 * Please be clear that it has no problem even for the 'len/data' cases,
 	 * so, just use this form to invoke the callback function.
-	 * -- Lionfore Hao Jul 22nd, 2018
 	 **/
 	((aosl_mpq_func_argv_t)f) (queued_ts_p, robj, (argc & ~ARGC_TYPE_DATA_LEN), argv);
 
@@ -619,7 +580,6 @@ struct refobj *mpq_invoke_refobj_get (aosl_ref_t ref, int *locked)
 				 * of object, the queued operation to the target mpq can
 				 * only access the resources which are valid when the ref
 				 * object is still alive.
-				 * -- Lionfore Hao Apr 10th, 2019
 				 **/
 				__refobj_rdlock_raw (robj);
 			}
@@ -630,7 +590,6 @@ struct refobj *mpq_invoke_refobj_get (aosl_ref_t ref, int *locked)
 			 * doing this checking without holding the lock is harmless
 			 * at least, because we have no changing back operation once
 			 * the 'destroyed' has been set.
-			 * -- Lionfore Hao Apr 13th, 2019
 			 **/
 			if (refobj_is_destroyed (robj)) {
 				if (!refobj_is_modify_async (robj))
@@ -717,7 +676,6 @@ static int __check_and_call_funcs (struct mp_queue *q)
 	 * No memory access fence needed here although it is
 	 * lockless here, because we hold a lock when writing
 	 * this list.
-	 * -- Lionfore Hao Jul 22nd, 2018
 	 **/
 	if (q->head != NULL) {
 		struct q_func_obj *head;
@@ -729,18 +687,6 @@ static int __check_and_call_funcs (struct mp_queue *q)
 		k_lock_unlock (&q->lock);
 
 		while (head != NULL) {
-            #if defined(__kspreadtrum__)
-            // assure thread exit ASAP when exit notify is recevied
-            // 0. LTWP thread lifetime isn't over as agora_rtc_fini invoke
-            // 1. LTWP thread may be hang and wait timeout when DNS parse failed, usually 5 second
-            //    it occupies memory resource, eg: message queue
-            // 2. user can't wait 5 sec
-            // 3. if try enter-exit many times, thread create may be failed, which causes corruption in RTOS
-            if (q->terminated) {
-                break;
-            }
-            #endif
-
 			struct q_func_obj *fo = head;
 			head = head->next;
 			__process_fo (q, fo);
@@ -774,8 +720,10 @@ static __inline__ intptr_t mpq_max_wait_time (struct mp_queue *q)
 
 static __inline__ void __free_q_obj (struct mp_queue *q)
 {
-	if (q->q_name != NULL)
+	if (q->q_name != NULL) {
+		AOSL_LOG_CRT("q_name=%s exit...", q->q_name);
 		aosl_free ((void *)q->q_name);
+	}
 
 	aosl_free ((void *)q);
 }
@@ -811,7 +759,11 @@ static void __q_destroy (struct mp_queue *q)
 
 static __inline__ void __set_this_mpq (struct mp_queue *q)
 {
+#if defined(__linux__) || defined(__APPLE__)
+	__this_q = q;
+#else
 	k_tls_key_set (__this_q_key, q);
+#endif
 }
 
 static void __mp_queue_poll_loop (struct mp_queue *q)
@@ -861,7 +813,6 @@ static void __q_wait_destroy (struct mp_queue *q, aosl_mpq_fini_t fini, void *ar
 	/**
 	 * Check and call the already queued funcs again for the racing
 	 * of putting q on other thread and the checking of q->usage.
-	 * -- Lionfore Hao Jul 23rd, 2018
 	 **/
 	for (;;) {
 		/**
@@ -870,7 +821,6 @@ static void __q_wait_destroy (struct mp_queue *q, aosl_mpq_fini_t fini, void *ar
 		 * new functions to our own queue. Yes, this will take the
 		 * risk of dead loop, but this should be the responsibility
 		 * of applications to avoid these conditions.
-		 * -- Lionfore Hao Jan 12th, 2019
 		 **/
 		if (__check_and_call_funcs (q) == 0)
 			break;
@@ -1011,7 +961,6 @@ static void mpq_thread_entry (void *param)
 		/**
 		 * MUST set the stack base before any potential
 		 * call to the user callback functions.
-		 * -- Lionfore Hao Oct 14th, 2020
 		 **/
 		q->q_stack_base.id = (aosl_stack_id_t)&q;
 		if (args->init != NULL && args->init (arg) < 0) {
@@ -1025,7 +974,6 @@ static void mpq_thread_entry (void *param)
 		/**
 		 * For creating q failed case, we also need to call the
 		 * possible fini function to free potential resources.
-		 * -- Lionfore Hao Aug 4th, 2019
 		 **/
 		if (fini != NULL)
 			fini (arg);
@@ -1041,7 +989,6 @@ static void mpq_thread_entry (void *param)
 		/**
 		 * MUST set the stack base before any potential
 		 * call to the user callback functions.
-		 * -- Lionfore Hao Oct 14th, 2020
 		 **/
 		q->q_stack_base.id = (aosl_stack_id_t)&q;
 		__mp_queue_poll_loop (q);
@@ -1327,7 +1274,6 @@ static int __add_or_invoke_f (struct mp_queue *q, int sync, aosl_mpq_t done_qid,
 		 * function, we might encounter the re-entrance of the same function.
 		 * So, we removed the following codes.
 		 * __check_and_call_funcs (q);
-		 * -- Lionfore Hao Oct 25th, 2018
 		 **/
 
 		now = aosl_tick_now ();
@@ -1335,7 +1281,6 @@ static int __add_or_invoke_f (struct mp_queue *q, int sync, aosl_mpq_t done_qid,
 		/**
 		 * New stack for sync call uses the same stack id with current stack,
 		 * this is important for the nested resume call cases.
-		 * -- Lionfore Hao Dec 19th, 2020
 		 **/
 		mpq_stack_init (&stack, curr_stack->id);
 		q->q_stack_curr = &stack;
@@ -1353,7 +1298,6 @@ static int __add_or_invoke_f (struct mp_queue *q, int sync, aosl_mpq_t done_qid,
  * of a function to another function, because 'va_list' is not a normal type
  * it is a compiler special type, and may be various across compilers.
  * Otherwise, we may encounter crashes.
- * -- Lionfore Hao Nov 17th, 2018
  **/
 static int __add_func_args (struct mp_queue *q, int sync, aosl_mpq_t done_qid, aosl_ref_t ref, const char *f_name, aosl_mpq_func_argv_t f, uintptr_t argc, va_list args)
 {
@@ -1367,7 +1311,7 @@ static int __add_func_args (struct mp_queue *q, int sync, aosl_mpq_t done_qid, a
 	if (argc > 0) {
 		uintptr_t l;
 
-		argv = alloca (sizeof (uintptr_t) * argc);
+		argv = aosl_alloca (sizeof (uintptr_t) * argc);
 		for (l = 0; l < argc; l++)
 			argv [l] = va_arg (args, uintptr_t);
 	}
@@ -1666,7 +1610,6 @@ __export_in_so__ void aosl_mpq_loop (void)
 		/**
 		 * MUST set the stack base before any potential
 		 * call to the user callback functions.
-		 * -- Lionfore Hao Oct 14th, 2020
 		 **/
 		q->q_stack_base.id = (aosl_stack_id_t)&q;
 		__mp_queue_poll_loop (q);
@@ -1713,7 +1656,6 @@ void __mpq_destroy (struct mp_queue *q)
 		 * time, then deadlock occurs, such as the audio
 		 * capture q and the main q.
 		 * So, we must be able to handle these scenes.
-		 * -- Lionfore Hao May 8th, 2019
 		 **/
 		k_lock_lock (&this_q->lock);
 		if (this_q->wait_q_count > 0) {
@@ -1762,7 +1704,7 @@ void __mpq_add_wait (struct mp_queue *q, struct q_wait_entry *wait)
 
 	/**
 	 * We just reuse the q->lock to protect the destroy wait queue,
-	 * it should be no problem. -- Lionfore Jul 24th, 2018
+	 * it should be no problem.
 	 **/
 	k_lock_lock (&q->lock);
 	if (q->destroy_wait_tail != NULL) {
@@ -1789,7 +1731,7 @@ int __mpq_destroy_wait (struct q_wait_entry *wait)
 
 static int mpq_do_wait (aosl_mpq_t mpq_id, int issue_destroy, int check_allowed)
 {
-	struct q_wait_entry wait;
+	struct q_wait_entry wait = {0};
 	struct mp_queue *q;
 
 	q = __mpq_get (mpq_id);
@@ -1831,7 +1773,6 @@ static void __main_auto_exit (void)
 	/**
 	 * Make sure the possible started main q
 	 * exit here.
-	 * -- Lionfore Hao Aug 13th, 2019
 	 **/
 	aosl_main_exit_wait ();
 }
@@ -1895,32 +1836,66 @@ __export_in_so__ void aosl_shrink_resources (void)
  * The AOSL library initialization function, we implement this function here
  * just for guaranteeing always linked this in, because the mpq is the basic
  * functionality of AOSL.
- * -- Lionfore Hao Jul 30th, 2018
  **/
+extern void k_mm_init (void);
+extern void k_mm_fini (void);
 extern void os_thread_init (void);
+extern void os_thread_fini (void);
 extern void k_errno_init (void);
-extern void k_aosl_mm_init (void);
-extern void k_refobj_init (void);
-extern void k_timer_init (void);
-extern void k_mpqp_init (void);
-extern void k_route_init (void);
-
-extern void rb_tls_fini (void);
-extern void k_route_fini (void);
-extern void k_mpqp_fini (void);
-extern void fileobj_fini (void);
-extern void k_timer_fini (void);
-extern void k_refobj_fini (void);
-extern void k_ahpl_mm_deinit (void);
 extern void k_errno_fini (void);
+extern void k_refobj_init (void);
+extern void k_refobj_fini (void);
+extern void k_timer_init (void);
+extern void k_timer_fini (void);
+extern void k_mpqp_init (void);
+extern void k_mpqp_fini (void);
+extern void k_route_init (void);
+extern void k_route_fini (void);
+
+/*
+ * aosl_ctor()/aosl_dtor() form a process-wide ownership pair.  Keep the
+ * ownership count separate from the initialization state so that independent
+ * users of the library can hold their own reference to the shared runtime.
+ * The lock is intentionally backed only by the HAL atomic primitive: the
+ * normal AOSL locks are not available until the first initialization finishes.
+ */
+static atomic_t s_aosl_init_refcount = 0;
+static atomic_t s_aosl_lifecycle_lock = 0;
+
+static void aosl_lifecycle_lock (void)
+{
+	while (atomic_cmpxchg (&s_aosl_lifecycle_lock, 0, 1) != 0) {
+		/* Avoid busy-waiting while another thread initializes or finalizes. */
+		aosl_msleep (5);
+	}
+}
+
+static void aosl_lifecycle_unlock (void)
+{
+	/* The atomic store provides the required release barrier. */
+	atomic_set (&s_aosl_lifecycle_lock, 0);
+}
 
 __export_in_so__ void aosl_dtor (void)
 {
+	aosl_lifecycle_lock ();
+
+	/* Make unmatched dtor calls harmless, just like releasing an empty ref. */
+	if (atomic_read (&s_aosl_init_refcount) == 0) {
+		aosl_lifecycle_unlock ();
+		return;
+	}
+
+	if (atomic_dec_return (&s_aosl_init_refcount) > 0) {
+		/* Other users still own the runtime. */
+		aosl_lifecycle_unlock ();
+		return;
+	}
+
 	if (THIS_MPQ () != NULL) {
 		/**
-		 * We do not allow any thread created by aosl to unload
-		 * the aosl library, if so, this should be a fatal bug!
-		 * -- Lionfore Hao Mar 23rd, 2019
+		 * We do not allow the last owner, running on a thread created by
+		 * AOSL, to unload the library; if so, this is a fatal bug.
 		 **/
 		abort ();
 	}
@@ -1928,32 +1903,31 @@ __export_in_so__ void aosl_dtor (void)
 	k_route_fini ();
 	k_mpqp_fini ();
 	mpq_fini ();
+	iofd_fini ();
 	fileobj_fini ();
 	k_timer_fini ();
 	k_refobj_fini ();
-	k_ahpl_mm_deinit ();
 	k_errno_fini ();
-	rb_tls_fini ();
+	os_thread_fini ();
+	k_mm_fini ();
 
-	__ctor_executed__ = 0;
+	aosl_lifecycle_unlock ();
 }
-
-#ifdef CONFIG_TOOLCHAIN_MS
-//#pragma section (".CRT$XTD", long, read)
-//__declspec(allocate(".CRT$XTD")) const void (*__aosl_dtor__) (void) = aosl_dtor;
-//#pragma comment(linker, "/merge:.CRT=.rdata")
-#endif
 
 __export_in_so__ void aosl_ctor (void)
 {
-	if (__ctor_executed__)
+	aosl_lifecycle_lock ();
+
+	/* The runtime is already initialized; acquire another shared reference. */
+	if (atomic_read (&s_aosl_init_refcount) > 0) {
+		atomic_inc (&s_aosl_init_refcount);
+		aosl_lifecycle_unlock ();
 		return;
+	}
 
-	__ctor_executed__ = 1;
-
+	k_mm_init ();
 	os_thread_init ();
 	k_errno_init ();
-	k_aosl_mm_init ();
 	k_refobj_init ();
 	k_timer_init ();
 	fileobj_init ();
@@ -1961,10 +1935,7 @@ __export_in_so__ void aosl_ctor (void)
 	mpq_init ();
 	k_mpqp_init ();
 	k_route_init ();
-}
 
-#ifdef CONFIG_TOOLCHAIN_MS
-#pragma section (".CRT$XID", long, read)
-__declspec(allocate(".CRT$XID")) const int (*__aosl_ctor__) (void) = aosl_ctor;
-//#pragma comment(linker, "/merge:.CRT=.rdata")
-#endif
+	atomic_set (&s_aosl_init_refcount, 1);
+	aosl_lifecycle_unlock ();
+}

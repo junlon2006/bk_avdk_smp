@@ -1,14 +1,11 @@
-/***************************************************************
- * Author		:		Lionfore Hao (haolianfu@agora.io)
- * Date			:		Jul 18th, 2018
- * Module		:		packet piece buffer header file
+/***************************************************************************
+ * Module:		packet piece buffer header file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- ***************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #ifndef __PSBUFF_H__
 #define __PSBUFF_H__
@@ -163,17 +160,17 @@ static inline void *psb_pull (struct ps_buff *psb, unsigned int len)
 	return psb->data;
 }
 
-static __always_inline void *psb_data (const struct ps_buff *psb)
+static inline void *psb_data (const struct ps_buff *psb)
 {
 	return psb->data;
 }
 
-static __always_inline void *psb_tail (const struct ps_buff *psb)
+static inline void *psb_tail (const struct ps_buff *psb)
 {
 	return (uint8_t *)psb->data + psb->len;
 }
 
-static __always_inline unsigned int psb_len (const struct ps_buff *psb)
+static inline unsigned int psb_len (const struct ps_buff *psb)
 {
 	return psb->len;
 }

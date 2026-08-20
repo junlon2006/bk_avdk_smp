@@ -1,3 +1,11 @@
+/***************************************************************************
+ * Module:	rbtree header file
+ *
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #ifndef __KERNEL_RBTREE_H__
 #define __KERNEL_RBTREE_H__
 
@@ -31,33 +39,6 @@ static __inline__ void rb_insert (struct aosl_rb_root *root, struct aosl_rb_node
 	rb_link_node (node, rb_parent, rb_link);
 	aosl_rb_insert_color (node, root);
 }
-
-/* Postorder iteration - always visit the parent after its children */
-extern struct aosl_rb_node *rb_first_postorder(const struct aosl_rb_root *);
-extern struct aosl_rb_node *rb_next_postorder(const struct aosl_rb_node *);
-
-#define aosl_rb_entry_safe(ptr, type, member) \
-	({ typeof(ptr) ____ptr = (ptr); \
-	   ____ptr ? aosl_rb_entry(____ptr, type, member) : NULL; \
-	})
-
-/**
- * rbtree_postorder_for_each_entry_safe - iterate over aosl_rb_root in post order of
- * given type safe against removal of aosl_rb_node entry
- *
- * @pos:	the 'type *' to use as a loop cursor.
- * @n:		another 'type *' to use as temporary storage
- * @root:	'aosl_rb_root *' of the rbtree.
- * @field:	the name of the aosl_rb_node field within 'type'.
- */
-#define rbtree_postorder_for_each_entry_safe(pos, n, root, field) \
-	for (pos = aosl_rb_entry_safe(rb_first_postorder(root), typeof(*pos), field); \
-	     pos && ({ n = aosl_rb_entry_safe(rb_next_postorder(&pos->field), \
-			typeof(*pos), field); 1; }); \
-	     pos = n)
-
-
-
 
 
 #endif /* __KERNEL_RBTREE_H__ */

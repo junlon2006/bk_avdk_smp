@@ -1,14 +1,11 @@
-/*************************************************************
- * Author		:		Lionfore Hao (haolianfu@agora.io)
- * Date			:		Jul 27th, 2018
+/***************************************************************************
  * Module		:		Multiplex queue iofd header file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #ifndef __IOFD_H__
 #define __IOFD_H__
@@ -22,7 +19,7 @@
 #include <kernel/fileobj.h>
 
 typedef void (*iofd_data_t) (void *data, size_t len, uintptr_t argc, uintptr_t argv [], const void *extra);
-typedef ssize_t (*iofd_post_process_t) (void *data, size_t len, uintptr_t argc, uintptr_t argv []);
+typedef isize_t (*iofd_post_process_t) (void *data, size_t len, uintptr_t argc, uintptr_t argv []);
 
 #define FD_MAX_PACKET_SIZE_MIN 1024 /* 1KB is small enough for one packet */
 #define FD_MAX_PACKET_SIZE_MAX (4 << 20) /* 4MB is big enough for one packet */
@@ -93,7 +90,7 @@ struct iofd {
 	/* MUST BE THE FIRST MEMBER */
 	struct file_obj fobj;
 
-	struct list_head node; /* node for multiplex queue iofds list */
+	struct aosl_list_head node; /* node for multiplex queue iofds list */
 
 #define IOFD_NOT_READY (1 << 8)
 #define IOFD_SOCK_LISTEN (1 << 9)
@@ -123,7 +120,11 @@ struct iofd {
 	iofd_data_t data_f;
 	aosl_fd_event_t event_f;
 	uintptr_t argc;
+#if defined(__ARMCC_VERSION)
+	uintptr_t argv [];
+#else
 	uintptr_t argv [0];
+#endif
 };
 
 #define iofd_fobj(iofd) (&(iofd)->fobj)
@@ -161,7 +162,7 @@ extern void f_event_and_close (struct mp_queue *q, struct iofd *f, int iofd_err)
 #define MAX_LW_COPY_SIZE 96
 #define MIN_SYSCALL_SIZE (1024)
 
-static __always_inline int __iofd_better_move_buffer (struct iofd *f)
+static inline int __iofd_better_move_buffer (struct iofd *f)
 {
 	size_t buff_size;
 
@@ -176,11 +177,11 @@ static __always_inline int __iofd_better_move_buffer (struct iofd *f)
 		return 1;
 
 	/* the left space is smaller than a max packet, and the left data len is small enough */
-	if ((char *)f->r_data - (char *)f->r_head > (ssize_t)f->max_pkt_size && (char *)f->r_tail - (char *)f->r_data < MIN_SYSCALL_SIZE)
+	if ((char *)f->r_data - (char *)f->r_head > (isize_t)f->max_pkt_size && (char *)f->r_tail - (char *)f->r_data < MIN_SYSCALL_SIZE)
 		return 1;
 
 	/* the received data is small enough for a moving */
-	if ((char *)f->r_tail - (char *)f->r_data <= MAX_LW_COPY_SIZE && (char *)f->r_data - (char *)f->r_head >= (ssize_t)(f->max_pkt_size / 2))
+	if ((char *)f->r_tail - (char *)f->r_data <= MAX_LW_COPY_SIZE && (char *)f->r_data - (char *)f->r_head >= (isize_t)(f->max_pkt_size / 2))
 		return 1;
 
 	return 0;
@@ -195,6 +196,7 @@ extern int __iofd_read_data (struct mp_queue *q, struct iofd *f);
 extern int __iofd_write_data (struct mp_queue *q, struct iofd *f);
 
 extern void iofd_init (void);
+extern void iofd_fini (void);
 extern int __iofd_close (aosl_fd_t fd);
 extern int __close_fd (aosl_fd_t fd);
 

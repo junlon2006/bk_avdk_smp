@@ -1,14 +1,11 @@
-/*************************************************************
- * Author		:		Lionfore Hao (haolianfu@agora.io)
- * Date			:		Jul 28th, 2018
- * Module		:		Red-Black tree based timer header file
+/***************************************************************************
+ * Module:		Red-Black tree based timer header file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #ifndef __TIMER_H__
 #define __TIMER_H__
@@ -25,7 +22,7 @@
 
 
 struct timer_node {
-	struct list_head node; /* node for multiplex queue timers table */
+	struct aosl_list_head node; /* node for multiplex queue timers table */
 
 	struct aosl_rb_node timer_node;
 	struct timer_node *timer_prev;
@@ -42,7 +39,11 @@ struct timer_node {
 	aosl_obj_dtor_t dtor;
 
 	uintptr_t argc;
+#if defined(__ARMCC_VERSION)
+	uintptr_t argv [];
+#else
 	uintptr_t argv [0];
+#endif
 };
 
 extern void __free_timer (struct timer_node *timer);
@@ -72,19 +73,6 @@ extern int __check_and_run_timers (struct mp_queue *q);
 extern void mpq_fini_timers (struct mp_queue *q);
 
 
-/*
- *	These inlines deal with timer wrapping correctly. You are
- *	strongly encouraged to use them
- *	1. Because people otherwise forget
- *	2. Because if the timer wrap changes in future you won't have to
- *	   alter your driver code.
- *
- * time_after(a,b) returns true if the time a is after time b.
- *
- * Do this with "<0" and ">=0" to only test the sign of the result. A
- * good compiler would generate better code (and a really good compiler
- * wouldn't care). Gcc is currently neither.
- */
 #define time_after(a,b)		\
 	((int64_t)((a) - (b)) > 0)
 #define time_before(a,b)	time_after(b,a)
@@ -93,21 +81,12 @@ extern void mpq_fini_timers (struct mp_queue *q);
 	((int64_t)((a) - (b)) >= 0)
 #define time_before_eq(a,b)	time_after_eq(b,a)
 
-/*
- * Calculate whether a is in the range of [b, c].
- */
 #define time_in_range(a,b,c) \
 	(time_after_eq(a,b) && time_before_eq(a,c))
 
-/*
- * Calculate whether a is in the range of [b, c).
- */
 #define time_in_range_open(a,b,c) \
 	(time_after_eq(a,b) && time_before(a,c))
 
-/* Same as above, but does so with platform independent 64bit types.
- * These must be used when utilizing jiffies_64 (i.e. return value of
- * get_jiffies_64() */
 #define time_after64(a,b)	\
 	((int64_t)((a) - (b)) > 0)
 #define time_before64(a,b)	time_after64(b,a)

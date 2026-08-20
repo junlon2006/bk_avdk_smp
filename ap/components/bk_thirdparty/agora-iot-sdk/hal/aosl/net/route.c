@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Aug 6th, 2018
+/***************************************************************************
  * Module:	OS independent route relatives implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #include <stdio.h>
 #include <string.h>
@@ -16,6 +13,7 @@
 #include <kernel/kernel.h>
 #include <kernel/err.h>
 #include <kernel/net.h>
+#include <kernel/netifs.h>
 #include <kernel/thread.h>
 #include <api/aosl_mpq.h>
 #include <api/aosl_route.h>
@@ -31,17 +29,17 @@ static aosl_def_rt_t last_valid_def_rt;
 
 static int __curr = 0;
 
-static aosl_def_rt_t *get_curr_def_rt ()
+static aosl_def_rt_t *get_curr_def_rt (void)
 {
 	return &def_rts [__curr];
 }
 
-static aosl_def_rt_t *get_new_def_rt ()
+static aosl_def_rt_t *get_new_def_rt (void)
 {
 	return &def_rts [!__curr];
 }
 
-static void switch_new_to_curr ()
+static void switch_new_to_curr (void)
 {
 	__curr = !__curr;
 }
@@ -104,13 +102,13 @@ static int __same_def_rt_cnt (const aosl_def_rt_t *def_rt1, const aosl_def_rt_t 
 	       def_rt1->IPv6.def_rt_cnt == def_rt2->IPv6.def_rt_cnt;
 }
 
-void __invalidate_rt (aosl_rt_t *rt)
+static void __invalidate_rt (aosl_rt_t *rt)
 {
 	rt->netif.if_index = -1; /* invalidate the if_index to indicate none */
 	rt->gw.sa.sa_family = AOSL_AF_UNSPEC; /* invalidate the sa_family to indicate none */
 }
 
-void __invalidate_def_rt (aosl_def_rt_t *def_rt)
+static void __invalidate_def_rt (aosl_def_rt_t *def_rt)
 {
 	__invalidate_rt (&def_rt->IPv4);
 	__invalidate_rt (&def_rt->IPv6);
@@ -413,7 +411,6 @@ __export_in_so__ int aosl_subscribe_net_events (aosl_net_ev_func_t f, void *arg)
 		 * events, this is just for possible lost network events between
 		 * the gap of after initialized the AOSL and before subscribing
 		 * the network events.
-		 * -- Lionfore Hao Jul 31st, 2018
 		 **/
 		check_report_def_rt_change_event (f, arg);
 		return err;
@@ -448,4 +445,6 @@ void k_route_init (void)
 void k_route_fini (void)
 {
 	k_rwlock_destroy (&netev_subscriber_lock);
+	route_clear ();
+	netifs_hash_init ();
 }

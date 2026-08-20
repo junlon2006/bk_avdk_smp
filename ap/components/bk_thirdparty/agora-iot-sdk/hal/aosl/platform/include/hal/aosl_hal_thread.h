@@ -1,16 +1,15 @@
-/*************************************************************
- * Author:	zhangguanxian@agora.io
- * Date	 :	2025/12/16
+/***************************************************************************
  * Module:	thread hal definitions.
  *
- * This is a part of the Agora RTC Service SDK.
- * Copyright (C) 2025 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #ifndef __AOSL_HAL_THREAD_H__
 #define __AOSL_HAL_THREAD_H__
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <hal/aosl_hal_config.h>
@@ -76,6 +75,14 @@ void aosl_hal_thread_exit(void *retval);
 int aosl_hal_thread_set_name(const char *name);
 
 /**
+ * @brief get current thread name
+ * @param [out] name output buffer for thread name
+ * @param [in] size output buffer size
+ * @return 0 on success, < 0 on error
+ */
+int aosl_hal_thread_get_name(char *name, size_t size);
+
+/**
  * @brief set current thread priority
  * @param [in] priority thread priority
  * @return 0 on success, < 0 on error
@@ -100,7 +107,7 @@ void aosl_hal_thread_detach(aosl_thread_t thread);
  * @brief get current thread handle
  * @return current thread handle
  */
-aosl_thread_t aosl_hal_thread_self();
+aosl_thread_t aosl_hal_thread_self(void);
 
 /**
  * @brief mutex type handle
@@ -108,10 +115,56 @@ aosl_thread_t aosl_hal_thread_self();
 typedef void* aosl_mutex_t;
 
 /**
+ * @brief static mutex size in bytes
+ * Large enough to hold platform-specific mutex data
+ * Linux: pthread_mutex_t (~40 bytes)
+ * FreeRTOS: StaticSemaphore_t (~80 bytes)
+ */
+#define AOSL_STATIC_MUTEX_SIZE 128
+
+/**
+ * @brief static mutex type with opaque array
+ * Contains platform-specific mutex data in an opaque array
+ */
+typedef struct {
+    union {
+        uint8_t opaque[AOSL_STATIC_MUTEX_SIZE];
+        uint64_t _align; /* force 8-byte alignment */
+    };
+} aosl_static_mutex_t;
+
+/**
+ * @brief platform-specific static mutex initializer macro
+ * Each platform defines this macro in their implementation
+ */
+#ifndef AOSL_STATIC_MUTEX_INIT
+#define AOSL_STATIC_MUTEX_INIT { .opaque = { 0 } }
+#endif
+
+/**
+ * @brief initialize a static mutex
+ * Note: This function does not guarantee thread safety.
+ * The caller must ensure no concurrent calls occur.
+ * 
+ * @param [in] mutex pointer to static mutex
+ * @return 0 on success, < 0 on error
+ */
+int aosl_hal_static_mutex_init(aosl_static_mutex_t *mutex);
+
+/**
+ * @brief finalize a static mutex
+ * Release resources associated with a static mutex.
+ * Must be called before the memory holding the static mutex is freed.
+ * 
+ * @param [in] mutex pointer to static mutex
+ */
+void aosl_hal_static_mutex_fini(aosl_static_mutex_t *mutex);
+
+/**
  * @brief create a new mutex
  * @return mutex handle, or NULL on error
  */
-aosl_mutex_t aosl_hal_mutex_create();
+aosl_mutex_t aosl_hal_mutex_create(void);
 
 /**
  * @brief destroy a mutex

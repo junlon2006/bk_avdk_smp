@@ -1,40 +1,37 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 15th, 2018
+/***************************************************************************
  * Module:	Time relative utilities implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #include <api/aosl_types.h>
 #include <api/aosl_time.h>
 #include <hal/aosl_hal_time.h>
 
 
-__export_in_so__ aosl_ts_t aosl_tick_now ()
+__export_in_so__ aosl_ts_t aosl_tick_now (void)
 {
 	return (aosl_ts_t)(aosl_hal_get_tick_ms());
 }
 
-__export_in_so__ aosl_ts_t aosl_tick_ms ()
+__export_in_so__ aosl_ts_t aosl_tick_ms (void)
 {
 	return (aosl_ts_t)(aosl_hal_get_tick_ms ());
 }
 
-__export_in_so__ aosl_ts_t aosl_tick_us ()
+__export_in_so__ aosl_ts_t aosl_tick_us (void)
 {
 	return 0;
 }
 
-__export_in_so__ aosl_ts_t aosl_time_sec ()
+__export_in_so__ aosl_ts_t aosl_time_sec (void)
 {
 	return (aosl_ts_t)(aosl_hal_get_time_ms () / 1000);
 }
 
-__export_in_so__ aosl_ts_t aosl_time_ms ()
+__export_in_so__ aosl_ts_t aosl_time_ms (void)
 {
 	return (aosl_ts_t)(aosl_hal_get_time_ms ());
 }

@@ -1,10 +1,21 @@
+/***************************************************************************
+ * Module:	log
+ *
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #include <kernel/kernel.h>
 #include <kernel/types.h>
 #include <kernel/log.h>
 #include <hal/aosl_hal_log.h>
 
+#define UNUSED(expr) (void)(expr)
+
 static void ____default_vlog (int level, const char *fmt, va_list args)
 {
+	UNUSED(level);
 	aosl_hal_printf(fmt, args);
 }
 

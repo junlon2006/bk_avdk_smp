@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Aug 3rd, 2018
+/***************************************************************************
  * Module:	AOSL common header file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #ifndef __AOSL_API_H__
 #define __AOSL_API_H__
@@ -34,7 +31,20 @@
 extern "C" {
 #endif
 
+/**
+ * Acquire a reference to the process-wide AOSL runtime. Each successful call
+ * must be paired with one aosl_dtor() call. The runtime is initialized on the
+ * first call and remains available until the last matching reference is
+ * released.
+ **/
+extern __aosl_api__ void aosl_ctor (void);
 
+/**
+ * Release one reference to the process-wide AOSL runtime. Global resources are
+ * finalized only when the matching reference count reaches zero; extra calls
+ * when no reference is held are ignored.
+ **/
+extern __aosl_api__ void aosl_dtor (void);
 
 #ifdef __cplusplus
 }

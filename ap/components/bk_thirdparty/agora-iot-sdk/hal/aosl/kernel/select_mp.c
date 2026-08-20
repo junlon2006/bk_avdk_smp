@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Oct 10th, 2020
+/***************************************************************************
  * Module:	select MP relative functionals implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 ~ 2020 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #include <hal/aosl_hal_iomp.h>
 #if defined(AOSL_HAL_HAVE_SELECT) && AOSL_HAL_HAVE_SELECT == 1
 
@@ -18,28 +15,35 @@
 #include <api/aosl_time.h>
 #include <kernel/mp_queue.h>
 
+#define UNUSED(expr) (void)(expr)
 
 int os_mp_init_select (struct mp_queue *q)
 {
+	UNUSED (q);
 	return 0;
 }
 
 void os_mp_fini_select (struct mp_queue *q)
 {
+	UNUSED (q);
 }
 
 int os_activate_sigp_select (struct mp_queue *q)
 {
+	UNUSED (q);
 	return 0;
 }
 
 int os_deactivate_sigp_select (struct mp_queue *q)
 {
+	UNUSED (q);
 	return 0;
 }
 
 int os_add_event_fd_select (struct mp_queue *q, struct iofd *f)
 {
+	UNUSED (q);
+
 	if (f->read_f != NULL)
 		f->flags |= AOSL_POLLIN;
 
@@ -51,6 +55,9 @@ int os_add_event_fd_select (struct mp_queue *q, struct iofd *f)
 
 int os_del_event_fd_select (struct mp_queue *q, struct iofd *f)
 {
+	UNUSED (q);
+	UNUSED (f);
+
 	return 0;
 }
 
@@ -80,7 +87,7 @@ __again:
 	aosl_hal_fdset_set (readfds, q->sigp.piper);
 	maxfd = q->sigp.piper;
 
-	list_for_each_entry_t (struct iofd, f, &q->iofds, node) {
+	aosl_list_for_each_entry_t (struct iofd, f, &q->iofds, node) {
 		if (f->flags & AOSL_POLLIN)
 			aosl_hal_fdset_set (readfds, iofd_fobj (f)->fd);
 
@@ -98,7 +105,7 @@ __again:
 	if (err > 0) {
 		int i;
 		for (i = 0; i < maxevents; i++) {
-			events [i].fd = -1;
+			events [i].fd = AOSL_INVALID_FD;
 			events [i].events = 0;
 		}
 
@@ -109,7 +116,7 @@ __again:
 			i++;
 		}
 
-		list_for_each_entry_t (struct iofd, f, &q->iofds, node) {
+		aosl_list_for_each_entry_t (struct iofd, f, &q->iofds, node) {
 			if (aosl_hal_fdset_isset (readfds, iofd_fobj (f)->fd)) {
 				f->flags &= ~AOSL_POLLIN;
 				events [i].events |= AOSL_POLLIN;
@@ -160,7 +167,6 @@ void os_mp_dispatch_select (struct mp_queue *q, aosl_poll_event_t *events, int e
 			 * a prior io fd. We should try our best to avoid these kinds of senario,
 			 * but some program may do as this according to some special logic.
 			 * So, just ignore these outdated events read by the prior syscall.
-			 * -- Lionfore Hao Nov 9th, 2018
 			 **/
 			continue;
 		}

@@ -7,6 +7,6 @@ int aosl_hal_printf(const char *format, va_list args)
 {
   char buffer[512];
   vsnprintf(buffer, sizeof(buffer), format, args);
-  printf("%s", buffer);
+  printf("[%u]%s", (unsigned int)rtos_get_time(), buffer);
   return 0;
 }

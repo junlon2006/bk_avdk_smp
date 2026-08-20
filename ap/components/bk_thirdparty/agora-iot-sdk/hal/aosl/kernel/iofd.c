@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 17th, 2018
+/***************************************************************************
  * Module:	Multiplex queue iofd implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #include <stdlib.h>
 #include <string.h>
@@ -24,10 +21,16 @@
 #include <kernel/mp_queue.h>
 #include <hal/aosl_hal_socket.h>
 
+#define UNUSED(expr) (void)(expr)
+
 void iofd_init (void)
 {
 	if (!AOSL_IS_ALIGNED_PTR (sizeof (struct iofd)) || !AOSL_IS_ALIGNED_PTR (sizeof (w_buffer_t)))
 		abort ();
+}
+
+void iofd_fini (void)
+{
 }
 
 static void iofd_destructor (void *obj)
@@ -42,8 +45,7 @@ int make_fd_nb_clex (aosl_fd_t fd)
 {
 	int err = aosl_hal_sk_set_nonblock (fd);
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 
 	return 0;
@@ -51,12 +53,12 @@ int make_fd_nb_clex (aosl_fd_t fd)
 
 void mpq_init_iofds (struct mp_queue *q)
 {
-	INIT_LIST_HEAD (&q->iofds);
+	aosl_list_head_init (&q->iofds);
 	q->iofd_count = 0;
 }
 
 
-static struct list_head __free_iofds = LIST_HEAD_INIT (__free_iofds);
+static struct aosl_list_head __free_iofds = AOSL_LIST_HEAD_INIT (__free_iofds);
 
 static int __q_add_fd (struct mp_queue *q, struct iofd *f)
 {
@@ -64,7 +66,7 @@ static int __q_add_fd (struct mp_queue *q, struct iofd *f)
 	if (err < 0)
 		return err;
 
-	list_add_tail (&f->node, &q->iofds);
+	aosl_list_add_tail (&f->node, &q->iofds);
 	q->iofd_count++;
 	return 0;
 }
@@ -75,10 +77,10 @@ int __iofd_read_data (struct mp_queue *q, struct iofd *f)
 	void *extra_bytes = (f->r_extra_size > 0) ? (char *)f->r_head + buff_size : NULL;
 
 	for (;;) {
-		ssize_t err;
+		isize_t err;
 
 		for (;;) {
-			ssize_t data_len;
+			isize_t data_len;
 
 			err = (char *)f->r_tail - (char *)f->r_data;
 			if (f->chk_pkt_f != NULL && err > 0) {
@@ -87,7 +89,6 @@ int __iofd_read_data (struct mp_queue *q, struct iofd *f)
 					/**
 					 * If the io fd has been closed in the callback function provided by user
 					 * due to some logic, then just give up here, no further processing needed.
-					 * -- Lionfore Hao Nov 10th, 2018
 					 **/
 					goto ____out;
 				}
@@ -110,7 +111,6 @@ int __iofd_read_data (struct mp_queue *q, struct iofd *f)
 			 *    we just received a packet with zero-length, so report this to
 			 *    the application just as normal, and then continue the 'read'
 			 *    operations;
-			 * -- Lionfore Hao Oct 15th, 2018
 			 **/
 			if (err > 0 || (f->flags & IOFD_READ_RETURN_0)) {
 				if (f->post_f != NULL) {
@@ -119,7 +119,6 @@ int __iofd_read_data (struct mp_queue *q, struct iofd *f)
 						/**
 						 * If the io fd has been closed in the callback function provided by user
 						 * due to some logic, then just give up here, no further processing needed.
-						 * -- Lionfore Hao Nov 10th, 2018
 						 **/
 						goto ____out;
 					}
@@ -134,7 +133,6 @@ int __iofd_read_data (struct mp_queue *q, struct iofd *f)
 						/**
 						 * If the io fd has been closed in the callback function provided by user
 						 * due to some logic, then just give up here, no further processing needed.
-						 * -- Lionfore Hao Nov 10th, 2018
 						 **/
 						goto ____out;
 					}
@@ -149,7 +147,6 @@ int __iofd_read_data (struct mp_queue *q, struct iofd *f)
 					 * If 'read' function returns 0 bytes, and this is a stream
 					 * based IO fd(whose chk_pkt_f is non-NULL), then there's no
 					 * need to do more 'read' operation again, so just return.
-					 * -- Lionfore Hao Oct 22nd, 2018
 					 **/
 					return 0;
 				}
@@ -159,7 +156,6 @@ int __iofd_read_data (struct mp_queue *q, struct iofd *f)
 				 * based IO fd(whose chk_pkt_f is NULL), then just indicates we
 				 * received a 0 length packet, so clear the flags, and break out
 				 * to do more 'read' operations, until got a -AOSL_EAGAIN.
-				 * -- Lionfore Hao Oct 22nd, 2018
 				 **/
 				f->flags &= ~IOFD_READ_RETURN_0;
 				break;
@@ -170,7 +166,6 @@ int __iofd_read_data (struct mp_queue *q, struct iofd *f)
 				 * There are 2 cases run to here:
 				 * 1. common no data case;
 				 * 2. partial data of a packet for stream based IO case;
-				 * -- Lionfore Hao Oct 22nd, 2018
 				 **/
 				break;
 			}
@@ -225,7 +220,7 @@ int __iofd_write_data (struct mp_queue *q, struct iofd *f)
 
 	while (f->w_q.head != NULL) {
 		w_buffer_t *node = f->w_q.head;
-		ssize_t err;
+		isize_t err;
 		err = f->write_f (iofd_fobj (f)->fd, node->w_data, (char *)node->w_tail - (char *)node->w_data, node->w_extra_size, f->argc, f->argv);
 		f->flags |= AOSL_POLLOUT;
 		if (err < 0) {
@@ -251,22 +246,28 @@ int __iofd_write_data (struct mp_queue *q, struct iofd *f)
 	return 0;
 }
 
-static ssize_t __default_read (aosl_fd_t fd, void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
+static isize_t __default_read (aosl_fd_t fd, void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
 {
-	ssize_t err = aosl_hal_sk_read (fd, buf, len);
+	isize_t err;
+	UNUSED (extra);
+	UNUSED (argc);
+	UNUSED (argv);
+	err = aosl_hal_sk_read (fd, buf, len);
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 	return err;
 }
 
-static ssize_t __default_write (aosl_fd_t fd, const void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
+static isize_t __default_write (aosl_fd_t fd, const void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
 {
-	ssize_t err = aosl_hal_sk_write (fd, buf, len);
+	isize_t err;
+	UNUSED (extra);
+	UNUSED (argc);
+	UNUSED (argv);
+	err = aosl_hal_sk_write (fd, buf, len);
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 	return err;
 }
@@ -274,6 +275,9 @@ static ssize_t __default_write (aosl_fd_t fd, const void *buf, size_t len, size_
 static void __iofd_not_ready_timeout (aosl_timer_t timer, const aosl_ts_t *now_p, uintptr_t argc, uintptr_t argv [])
 {
 	struct iofd *f = (struct iofd *)argv [0];
+	UNUSED (timer);
+	UNUSED (now_p);
+	UNUSED (argc);
 
 	__iofd_get (f);
 	if (f->flags & IOFD_NOT_READY)
@@ -348,7 +352,7 @@ int __mpq_add_fd_argv (struct mp_queue *q, aosl_fd_t fd, int not_ready_timeo, si
 	f->chk_pkt_f = chk_pkt_f;
 	f->post_f = post_f;
 	f->put_fd_f = NULL;
-	f->data_f = (iofd_data_t)data_f;
+	f->data_f = (iofd_data_t)(void *)data_f;
 	f->event_f = event_f;
 	f->argc = argc;
 	for (l = 0; l < argc; l++)
@@ -377,7 +381,6 @@ int __mpq_add_fd_argv (struct mp_queue *q, aosl_fd_t fd, int not_ready_timeo, si
 	/**
 	 * ioctl (fd, FIOCLEX, 0) will fail for AF_NETLINK socket
 	 * on some Android devices, so do not return error here.
-	 * -- Lionfore Hao Feb 27th, 2019
 	 **/
 	err = make_fd_nb_clex (fd);
 	if (err < 0)
@@ -425,7 +428,7 @@ __export_in_so__ int aosl_mpq_add_fd (aosl_fd_t fd, size_t max_pkt_size, aosl_fd
 		return -1;
 	}
 
-	argv = alloca (sizeof (uintptr_t) * argc);
+	argv = aosl_alloca (sizeof (uintptr_t) * argc);
 	va_start (args, argc);
 	for (l = 0; l < argc; l++)
 		argv [l] = va_arg (args, uintptr_t);
@@ -444,6 +447,9 @@ static void ____target_q_add_fd (const aosl_ts_t *queued_ts_p, aosl_refobj_t rob
 	aosl_check_packet_t chk_pkt_f = (aosl_check_packet_t)argv [5];
 	aosl_fd_data_t data_f = (aosl_fd_data_t)argv [6];
 	aosl_fd_event_t event_f = (aosl_fd_event_t)argv [7];
+
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
 
 	*err_p = __mpq_add_fd_argv (THIS_MPQ (), fd, -1, max_pkt_size, 0, 0, read_f, write_f, chk_pkt_f, NULL, data_f, event_f, argc - 8, &argv [8]);
 }
@@ -465,7 +471,7 @@ __export_in_so__ int aosl_mpq_add_fd_on_q (aosl_mpq_t qid, aosl_fd_t fd, size_t 
 	if (q == NULL)
 		return_err (-AOSL_EINVAL);
 
-	argv = alloca (sizeof (uintptr_t) * (8 + argc));
+	argv = aosl_alloca (sizeof (uintptr_t) * (8 + argc));
 	argv [0] = (uintptr_t)&err;
 	argv [1] = (uintptr_t)fd;
 	argv [2] = (uintptr_t)max_pkt_size;
@@ -499,7 +505,6 @@ static int __q_del_f (struct mp_queue *q, struct iofd *f)
 		/**
 		 * We set the timer to NULL just because the iofd object
 		 * might not be freed directly here due to the usage.
-		 * -- Lionfore Hao Nov 9th, 2018
 		 **/
 		f->timer = AOSL_MPQ_TIMER_INVALID;
 	}
@@ -515,7 +520,7 @@ static int __q_del_f (struct mp_queue *q, struct iofd *f)
 		return err;
 	}
 
-	list_del (&f->node);
+	aosl_list_del (&f->node);
 	q->iofd_count--;
 	iofd_put (f); /* decrease the initial usage count */
 	return err;
@@ -538,10 +543,9 @@ int __mpq_del_fd (struct mp_queue *q, aosl_fd_t fd)
 
 static int ____close (aosl_fd_t fd)
 {
-	int err = aosl_hal_sk_close ((int)fd);
+	int err = aosl_hal_sk_close (fd);
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 
 	return err;
@@ -569,7 +573,6 @@ static int __this_q_close_f (struct mp_queue *q, struct iofd *f)
 	 * The io fd object might not be freed due to the
 	 * reference count holdings, but the fd has been
 	 * closed already, so set it to invalid value.
-	 * -- Lionfore Hao Nov 10th, 2018
 	 **/
 	iofd_fobj (f)->fd = AOSL_INVALID_FD;
 	iofd_put (f);
@@ -583,7 +586,6 @@ void f_event_and_close (struct mp_queue *q, struct iofd *f, int iofd_err)
 			/**
 			 * The callback function specified by event_f has the responsibility
 			 * to release the fd relative resources for the error cases.
-			 * -- Lionfore Hao Oct 15th, 2018
 			 **/
 			f->event_f (iofd_fobj (f)->fd, iofd_err, f->argc, f->argv);
 		}
@@ -596,18 +598,11 @@ void f_event_and_close (struct mp_queue *q, struct iofd *f, int iofd_err)
 void mpq_fini_iofds (struct mp_queue *q)
 {
 	struct iofd *f;
+	struct aosl_list_head *node;
 
 	/* free the active fds */
-#ifndef CONFIG_TOOLCHAIN_MS
-	while ((f = list_head_entry (&q->iofds, struct iofd, node)))
-#else
-	struct list_head *node;
-	while ((node = list_head (&q->iofds)))
-#endif
-	{
-#ifdef CONFIG_TOOLCHAIN_MS
-		f = list_entry (node, struct iofd, node);
-#endif
+	while ((node = aosl_list_head (&q->iofds))) {
+		f = aosl_list_entry (node, struct iofd, node);
 		__this_q_close_f (q, f);
 	}
 
@@ -623,6 +618,10 @@ static void ____target_q_close (const aosl_ts_t *queued_ts_p, aosl_refobj_t robj
 {
 	int *err_p = (int *)argv [0];
 	struct iofd *f = (struct iofd *)argv [1];
+
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+	UNUSED (argc);
 
 	*err_p = __this_q_close_f (THIS_MPQ (), f);
 }
@@ -673,6 +672,10 @@ static void ____target_q_del_fd (const aosl_ts_t *queued_ts_p, aosl_refobj_t rob
 	int *err_p = (int *)argv [0];
 	struct iofd *f = (struct iofd *)argv [1];
 
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+	UNUSED (argc);
+
 	*err_p = __q_del_f (THIS_MPQ (), f);
 }
 
@@ -710,10 +713,10 @@ __export_in_so__ int aosl_mpq_del_fd (aosl_fd_t fd)
 	return_err (__iofd_del (fd));
 }
 
-static ssize_t ____write (struct iofd *f, const void *buf, size_t len)
+static isize_t ____write (struct iofd *f, const void *buf, size_t len)
 {
 	w_buffer_t *node;
-	ssize_t err;
+	isize_t err;
 
 	if (len > FD_MAX_WBUF_SIZE)
 		return -AOSL_EMSGSIZE;
@@ -731,8 +734,7 @@ static ssize_t ____write (struct iofd *f, const void *buf, size_t len)
 	f->flags |= AOSL_POLLOUT;
 
 	if (err <= 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 
 	if ((size_t)err < len) {
@@ -754,24 +756,27 @@ __queue_it:
 
 static void ____target_q_write (const aosl_ts_t *queued_ts_p, aosl_refobj_t robj, uintptr_t argc, uintptr_t argv [])
 {
-	ssize_t *err_p = (ssize_t *)argv [0];
+	isize_t *err_p = (isize_t *)argv [0];
 	struct iofd *f = (struct iofd *)argv [1];
 	const void *buf = (const void *)argv [2];
 	size_t len = (size_t)argv [3];
 
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+	UNUSED (argc);
+
 	*err_p = ____write (f, buf, len);
 }
 
-__export_in_so__ ssize_t aosl_write (aosl_fd_t fd, const void *buf, size_t len)
+__export_in_so__ isize_t aosl_write (aosl_fd_t fd, const void *buf, size_t len)
 {
 	struct iofd *f;
-	ssize_t err = -AOSL_EINVAL;
+	isize_t err = -AOSL_EINVAL;
 
 	f = iofd_get (fd);
 	/**
 	 * We do not support write operation on a fd if it is not added to
 	 * the mpq, please use the system call API directly in these cases.
-	 * -- Lionfore Hao Oct 21st, 2018
 	 **/
 	if (f != NULL) {
 		struct mp_queue *q = __mpq_get_or_this (f->q);

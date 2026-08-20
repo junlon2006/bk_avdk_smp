@@ -1,14 +1,11 @@
-/*************************************************************
- * Author		:		Lionfore Hao (haolianfu@agora.io)
- * Date			:		Jul 17th, 2018
+/***************************************************************************
  * Module		:		Red-Black tree based timer implementation
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #include <stdlib.h>
 #include <time.h>
@@ -26,38 +23,47 @@
 #include <kernel/thread.h>
 #include <kernel/mp_queue.h>
 
+#define UNUSED(expr) (void)(expr)
+
 
 #define STATIC_TIMER_ID_POOL_SIZE 8
 
 static k_rwlock_t timer_table_lock;
-static struct timer_node *static_timer_table [STATIC_TIMER_ID_POOL_SIZE];
-static struct timer_node **timer_table = static_timer_table;
-static int timer_table_size = STATIC_TIMER_ID_POOL_SIZE;
 static bitmap_t *timer_id_pool_bits = NULL;
+static struct timer_node **timer_table = NULL;
+static int timer_table_size = 0;
 
 /* 0 is the only invalid life id, so init it to 1 */
 static uint16_t __timer_life_id = 1;
 
 void k_timer_init (void)
 {
-	int i;
 	timer_id_pool_bits = bitmap_create(STATIC_TIMER_ID_POOL_SIZE);
-
-	for (i = 0; i < STATIC_TIMER_ID_POOL_SIZE; i++)
-		static_timer_table [i] = NULL;
+	timer_table = (struct timer_node **)aosl_malloc_impl (sizeof (struct timer_node *) * STATIC_TIMER_ID_POOL_SIZE);
+	if (!timer_table || !timer_id_pool_bits) {
+		abort ();
+	}
+	timer_table_size = STATIC_TIMER_ID_POOL_SIZE;
+	memset (timer_table, 0, sizeof (struct timer_node *) * timer_table_size);
 
 	k_rwlock_init (&timer_table_lock);
 }
 
 void k_timer_fini (void)
 {
-	bitmap_destroy (timer_id_pool_bits);
-	timer_id_pool_bits = NULL;
-
-	if (timer_table != static_timer_table) {
+	if (timer_id_pool_bits) {
+		bitmap_destroy (timer_id_pool_bits);
+		timer_id_pool_bits = NULL;
+	}
+	if (timer_table) {
+		for (int i = 0; i < timer_table_size; i++) {
+			if (timer_table [i] != NULL) {
+				AOSL_LOG_ERR("[dtor] no free");
+			}
+		}
 		aosl_free (timer_table);
-		timer_table = static_timer_table;
-		timer_table_size = STATIC_TIMER_ID_POOL_SIZE;
+		timer_table = NULL;
+		timer_table_size = 0;
 	}
 
 	k_rwlock_destroy (&timer_table_lock);
@@ -67,7 +73,7 @@ void k_timer_fini (void)
 #define TIMER_ID_POOL_MAX_SIZE 20480
 #define MIN_TIMER_ID 0
 
-static int get_unused_timer_id ()
+static int get_unused_timer_id (void)
 {
 	int timer_id;
 
@@ -83,7 +89,7 @@ static int get_unused_timer_id ()
 			return -AOSL_EOVERFLOW;
 		}
 
-		new_table_size = timer_table_size + 64;
+		new_table_size = timer_table_size + 8;
 
 		new_bits = bitmap_create(new_table_size);
 		if (!new_bits) {
@@ -111,7 +117,7 @@ static int get_unused_timer_id ()
 		timer_table_size = new_table_size;
 
 		timer_id = bitmap_find_first_zero_bit (timer_id_pool_bits);
-		BUG_ON (timer_id >= 0);
+		BUG_ON (timer_id < 0);
 	}
 
 	bitmap_set (timer_id_pool_bits, timer_id);
@@ -160,7 +166,6 @@ static void __timer_id_install (int timer_id, struct timer_node *timer)
 		/**
 		 * 0 is the only invalid life id, so reset it to
 		 * 1 if we the life id counter wrapped back.
-		 * -- Lionfore Hao Apr 13th, 2019
 		 **/
 		if (__timer_life_id == 0)
 			__timer_life_id = 1;
@@ -206,7 +211,6 @@ void __free_timer (struct timer_node *timer)
 	 * timer.
 	 * Free it just before we free the timer itself
 	 * should be better for these cases.
-	 * -- Lionfore Hao Dec 8th, 2018
 	 **/
 	__put_unused_timer_id (timer_id - MIN_TIMER_ID);
 	aosl_free (timer);
@@ -349,8 +353,8 @@ static __inline__ void __timer_unlink_list (struct timer_base * base, struct tim
 	}
 
 	/* this is important for indicating the timer is not scheduled */
-	timer->timer_next = LIST_POISON1;
-	timer->timer_prev = LIST_POISON2;
+	timer->timer_next = AOSL_LIST_POISON1;
+	timer->timer_prev = AOSL_LIST_POISON2;
 }
 
 static __inline__ void __timer_unlink_rb (struct timer_base * base, struct timer_node * timer)
@@ -386,7 +390,7 @@ static __inline__ void __sched_timer (struct mp_queue *q, struct timer_node *tim
 
 static void __resched_timer (struct mp_queue *q, struct timer_node *timer, uintptr_t interval, aosl_ts_t expire_time)
 {
-	if (timer->timer_next != LIST_POISON1)
+	if (timer->timer_next != AOSL_LIST_POISON1)
 		__unlink_timer (&q->timer_base, &timer->timer_node);
 
 	if (expire_time == 0 && interval != AOSL_INVALID_TIMER_INTERVAL)
@@ -397,7 +401,7 @@ static void __resched_timer (struct mp_queue *q, struct timer_node *timer, uintp
 
 static __inline__ void __cancel_timer_on_q (struct mp_queue *q, struct timer_node *timer)
 {
-	if (timer->timer_next != LIST_POISON1)
+	if (timer->timer_next != AOSL_LIST_POISON1)
 		__unlink_timer (&q->timer_base, &timer->timer_node);
 }
 
@@ -420,8 +424,8 @@ static struct timer_node *__create_timer_on_q (struct mp_queue *q, uintptr_t int
 	}
 
 	/* this is important for indicating the timer is not scheduled */
-	timer->timer_next = LIST_POISON1;
-	timer->timer_prev = LIST_POISON2;
+	timer->timer_next = AOSL_LIST_POISON1;
+	timer->timer_prev = AOSL_LIST_POISON2;
 
 	timer->obj_id = AOSL_MPQ_TIMER_INVALID;
 	atomic_set (&timer->usage, 1);
@@ -437,7 +441,7 @@ static struct timer_node *__create_timer_on_q (struct mp_queue *q, uintptr_t int
 	for (l = 0; l < argc; l++)
 		timer->argv [l] = argv [l];
 
-	list_add_tail (&timer->node, &q->timers);
+	aosl_list_add_tail (&timer->node, &q->timers);
 	q->timer_count++;
 	__timer_id_install (timer_id, timer);
 	return timer;
@@ -452,7 +456,7 @@ static int __kill_timer_on_q (struct mp_queue *q, struct timer_node *timer)
 
 	__cancel_timer_on_q (q, timer);
 
-	list_del (&timer->node);
+	aosl_list_del (&timer->node);
 	q->timer_count--;
 	__timer_put (timer);
 	return 0;
@@ -462,25 +466,18 @@ void mpq_init_timers (struct mp_queue *q)
 {
 	aosl_rb_root_init (&q->timer_base.active, NULL /* we keep the timer using the raw mechanism */);
 	q->timer_base.first = NULL;
-	INIT_LIST_HEAD (&q->timers);
+	aosl_list_head_init (&q->timers);
 	q->timer_count = 0;
 }
 
 void mpq_fini_timers (struct mp_queue *q)
 {
 	struct timer_node *timer;
+	struct aosl_list_head *node;
 
 	/* free the active fds */
-#ifndef CONFIG_TOOLCHAIN_MS
-	while ((timer = list_head_entry (&q->timers, struct timer_node, node)))
-#else
-	struct list_head *node;
-	while ((node = list_head (&q->timers)))
-#endif
-	{
-#ifdef CONFIG_TOOLCHAIN_MS
-		timer = list_entry (node, struct timer_node, node);
-#endif
+	while ((node = aosl_list_head (&q->timers))) {
+		timer = aosl_list_entry (node, struct timer_node, node);
 		__kill_timer_on_q (q, timer);
 	}
 
@@ -495,18 +492,6 @@ int __check_and_run_timers (struct mp_queue *q)
 	int count = 0;
 
 	while ((timer = base->first) && time_after_eq (now, timer->expire_time)) {
-        #if defined(__kspreadtrum__)
-        // assure thread exit ASAP when exit notify is recevied
-        // 0. LTWP thread lifetime isn't over as agora_rtc_fini invoke
-        // 1. LTWP thread may be hang and wait timeout when DNS parse failed, usually 5 second
-        //    it occupies memory resource, eg: message queue
-        // 2. user can't wait 5 sec
-        // 3. if try enter-exit many times, thread create may be failed, which causes corruption in RTOS
-	    if (q->terminated) {
-	        break;
-        }
-        #endif
-
 		__unlink_timer (&q->timer_base, &timer->timer_node);
 
 		/* All oneshot timers must have invalid interval */
@@ -525,14 +510,12 @@ int __check_and_run_timers (struct mp_queue *q)
 				 * would keep the same value with previous, please pay
 				 * attention to the integer wrapping cases generally,
 				 * although we are using a 64bit integer now.
-				 * -- Lionfore Hao Sep 4th, 2018
 				 * =====================================================
 				 * We MUST NOT use 'now' as the expire time in this case
 				 * because a dead loop here is not our expectation, so
 				 * get the new current tick count again then the loop
 				 * here would only be a 1ms time span instead of a dead
 				 * loop.
-				 * -- Lionfore Hao Oct 13th, 2018
 				 **/
 				timer->expire_time = aosl_tick_now ();
 			}
@@ -542,7 +525,6 @@ int __check_and_run_timers (struct mp_queue *q)
 			 * a periodic timer, then we might got too many invocations
 			 * once one call delays some extra time, so we changed back
 			 * to this way for the expire time.
-			 * -- Lionfore Hao Mar 25th, 2020
 			 **/
 		    //	timer->expire_time = aosl_tick_now () + timer->interval;
 		    timer->expire_time = aosl_tick_now () + timer->interval - (now - timer->expire_time);
@@ -588,7 +570,7 @@ __export_in_so__ aosl_timer_t aosl_mpq_create_timer (uintptr_t interval, aosl_ti
 		return AOSL_MPQ_TIMER_INVALID;
 	}
 
-	argv = alloca (sizeof (uintptr_t) * argc);
+	argv = aosl_alloca (sizeof (uintptr_t) * argc);
 	va_start (args, argc);
 	for (l = 0; l < argc; l++)
 		argv [l] = va_arg (args, uintptr_t);
@@ -607,6 +589,9 @@ static void ____target_q_create_timer (const aosl_ts_t *queued_ts_p, aosl_refobj
 	uintptr_t interval = argv [1];
 	aosl_timer_func_t func = (aosl_timer_func_t)argv [2];
 	aosl_obj_dtor_t dtor = (aosl_obj_dtor_t)argv [3];
+
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
 
 	*timer_p = __create_timer_on_q (THIS_MPQ (), interval, func, dtor, argc - 4, &argv [4]);
 }
@@ -634,7 +619,7 @@ static aosl_timer_t mpq_create_timer_on_q_args (aosl_mpq_t qid, uintptr_t interv
 		return AOSL_MPQ_TIMER_INVALID;
 	}
 
-	argv = alloca (sizeof (uintptr_t) * (4 + argc));
+	argv = aosl_alloca (sizeof (uintptr_t) * (4 + argc));
 	argv [0] = (uintptr_t)&timer;
 	argv [1] = (uintptr_t)interval;
 	argv [2] = (uintptr_t)func;
@@ -694,7 +679,7 @@ __export_in_so__ aosl_timer_t aosl_mpq_create_oneshot_timer (aosl_timer_func_t f
 		return AOSL_MPQ_TIMER_INVALID;
 	}
 
-	argv = alloca (sizeof (uintptr_t) * argc);
+	argv = aosl_alloca (sizeof (uintptr_t) * argc);
 	va_start (args, argc);
 	for (l = 0; l < argc; l++)
 		argv [l] = va_arg (args, uintptr_t);
@@ -760,7 +745,7 @@ __export_in_so__ aosl_timer_t aosl_mpq_set_timer (uintptr_t interval, aosl_timer
 		return AOSL_MPQ_TIMER_INVALID;
 	}
 
-	argv = alloca (sizeof (uintptr_t) * argc);
+	argv = aosl_alloca (sizeof (uintptr_t) * argc);
 	va_start (args, argc);
 	for (l = 0; l < argc; l++)
 		argv [l] = va_arg (args, uintptr_t);
@@ -780,6 +765,9 @@ static void ____target_q_set_timer (const aosl_ts_t *queued_ts_p, aosl_refobj_t 
 	aosl_ts_t *expire_time_p = (aosl_ts_t *)argv [2];
 	aosl_timer_func_t func = (aosl_timer_func_t)argv [3];
 	aosl_obj_dtor_t dtor = (aosl_obj_dtor_t)argv [4];
+
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
 
 	*timer_p = __set_timer_on_q (THIS_MPQ (), interval, expire_time_p ? *expire_time_p : 0, func, dtor, argc - 5, &argv [5]);
 }
@@ -807,7 +795,7 @@ static aosl_timer_t mpq_set_timer_on_q_args (aosl_mpq_t qid, uintptr_t interval,
 		return AOSL_MPQ_TIMER_INVALID;
 	}
 
-	argv = alloca (sizeof (uintptr_t) * (5 + argc));
+	argv = aosl_alloca (sizeof (uintptr_t) * (5 + argc));
 	argv [0] = (uintptr_t)&timer;
 	argv [1] = (uintptr_t)interval;
 	argv [2] = (uintptr_t)expire_time_p;
@@ -873,7 +861,7 @@ __export_in_so__ aosl_timer_t aosl_mpq_set_oneshot_timer (aosl_ts_t expire_time,
 		return AOSL_MPQ_TIMER_INVALID;
 	}
 
-	argv = alloca (sizeof (uintptr_t) * argc);
+	argv = aosl_alloca (sizeof (uintptr_t) * argc);
 	va_start (args, argc);
 	for (l = 0; l < argc; l++)
 		argv [l] = va_arg (args, uintptr_t);
@@ -918,7 +906,7 @@ __export_in_so__ int aosl_mpq_timer_active (aosl_timer_t timer_id, int *active_p
 	struct timer_node *timer = timer_get (timer_id);
 	if (timer != NULL) {
 		if (active_p != NULL)
-			*active_p = (int)(timer->timer_next != LIST_POISON1);
+			*active_p = (int)(timer->timer_next != AOSL_LIST_POISON1);
 
 		timer_put (timer);
 		return 0;
@@ -933,6 +921,10 @@ static void ____target_q_resched_timer (const aosl_ts_t *queued_ts_p, aosl_refob
 	struct timer_node *timer = (struct timer_node *)argv [0];
 	uintptr_t interval = argv [1];
 	aosl_ts_t *expire_time_p = (aosl_ts_t *)argv [2];
+
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+	UNUSED (argc);
 
 	__resched_timer (THIS_MPQ (), timer, interval, expire_time_p ? *expire_time_p : 0);
 }
@@ -1008,6 +1000,11 @@ __export_in_so__ int aosl_mpq_resched_oneshot_timer (aosl_timer_t timer_id, aosl
 static void ____target_q_cancel_timer (const aosl_ts_t *queued_ts_p, aosl_refobj_t robj, uintptr_t argc, uintptr_t argv [])
 {
 	struct timer_node *timer = (struct timer_node *)argv [0];
+
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+	UNUSED (argc);
+
 	__cancel_timer_on_q (THIS_MPQ (), timer);
 }
 
@@ -1050,6 +1047,10 @@ static void ____target_q_kill_timer (const aosl_ts_t *queued_ts_p, aosl_refobj_t
 	struct mp_queue *q = THIS_MPQ ();
 	struct timer_node *timer = (struct timer_node *)argv [0];
 	int *err_p = (int *)argv [1];
+
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+	UNUSED (argc);
 
 	*err_p = __kill_timer_on_q (q, timer);
 }

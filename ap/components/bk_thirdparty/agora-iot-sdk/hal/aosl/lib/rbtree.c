@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 17th, 2018
+/***************************************************************************
  * Module:	Red-Black tree implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #include <kernel/kernel.h>
 #include <kernel/rbtree.h>
@@ -386,45 +383,6 @@ void aosl_rb_replace_node (struct aosl_rb_node *victim, struct aosl_rb_node *new
 
 	/* Copy the pointers/colour from the victim to the replacement */
 	*new = *victim;
-}
-
-
-static struct aosl_rb_node *rb_left_deepest_node(const struct aosl_rb_node *node)
-{
-	for (;;) {
-		if (node->rb_left)
-			node = node->rb_left;
-		else if (node->rb_right)
-			node = node->rb_right;
-		else
-			return (struct aosl_rb_node *)node;
-	}
-}
-
-struct aosl_rb_node *rb_next_postorder(const struct aosl_rb_node *node)
-{
-	const struct aosl_rb_node *parent;
-	if (!node)
-		return NULL;
-	parent = rb_parent(node);
-
-	/* If we're sitting on node, we've already seen our children */
-	if (parent && node == parent->rb_left && parent->rb_right) {
-		/* If we are the parent's left node, go to the parent's right
-		 * node then all the way down to the left */
-		return rb_left_deepest_node(parent->rb_right);
-	} else
-		/* Otherwise we are the parent's right node, and the parent
-		 * should be next */
-		return (struct aosl_rb_node *)parent;
-}
-
-struct aosl_rb_node *rb_first_postorder(const struct aosl_rb_root *root)
-{
-	if (!root->rb_node)
-		return NULL;
-
-	return rb_left_deepest_node(root->rb_node);
 }
 
 

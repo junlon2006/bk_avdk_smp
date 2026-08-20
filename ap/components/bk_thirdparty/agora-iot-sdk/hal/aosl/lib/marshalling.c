@@ -1,14 +1,11 @@
-/*************************************************************
- * Author		:		Lionfore Hao (haolianfu@agora.io)
- * Date			:		Jul 21st, 2018
+/***************************************************************************
  * Module		:		Data Marshalling
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #include <stdio.h>
 #include <string.h>
@@ -317,9 +314,9 @@ __einval:
 	return -AOSL_EINVAL;
 }
 
-static ssize_t _____marshal (const aosl_type_info_t *type, const void *typed_obj_p, aosl_psb_t **psb_p)
+static isize_t _____marshal (const aosl_type_info_t *type, const void *typed_obj_p, aosl_psb_t **psb_p)
 {
-	ssize_t ret = 0;
+	isize_t ret = 0;
 	uint16_t val, i;
 	const void *this_obj_addr = NULL;
 	uint8_t bool_val;
@@ -403,7 +400,7 @@ __CHECK_AND_ENCODE_BASETYPE (type, this_obj_addr, type, fn)
 	this_obj_addr = (uint8_t *)typed_obj_p + (uintptr_t)type->obj_addr;
 
 	if (type->is_have && !type->is_have(this_obj_addr)) {
-		goto __out;
+		goto __marshal_out;
 	}
 
 	switch (type->type_id) {
@@ -568,7 +565,7 @@ __CHECK_AND_ENCODE_BASETYPE (type, this_obj_addr, type, fn)
 		goto __err;
 	}
 
-__out:
+__marshal_out:
 	*psb_p = psb;
 	return len;
 
@@ -589,14 +586,13 @@ __err:
  * we will pass their address, right ?
  * So, please pass the address of any data's corresponding variable as 'typed_obj_p' arg
  * to this function instead of their simple value!
- * -- All Supported by Lionfore Hao Jul 23rd, 2018
  */
-static ssize_t smart_marshal (const aosl_type_info_t *obj_type, const void *obj_addr, aosl_psb_t *psb)
+static isize_t smart_marshal (const aosl_type_info_t *obj_type, const void *obj_addr, aosl_psb_t *psb)
 {
 	return _____marshal (obj_type, obj_addr, &psb);
 }
 
-static __inline__ ssize_t SAFE_STRSIZE (const aosl_psb_t *psb)
+static __inline__ isize_t SAFE_STRSIZE (const aosl_psb_t *psb)
 {
 	size_t __l = 0;
 	size_t __i = 0;
@@ -620,12 +616,12 @@ static __inline__ ssize_t SAFE_STRSIZE (const aosl_psb_t *psb)
 	}
 
 	__l++; /* index ==> len(including the terminating '\0') */
-	return (ssize_t)__l;
+	return (isize_t)__l;
 }
 
-ssize_t _____unmarshal (const aosl_type_info_t *type, void *typed_obj_p, const aosl_psb_t **psb_p)
+isize_t _____unmarshal (const aosl_type_info_t *type, void *typed_obj_p, const aosl_psb_t **psb_p)
 {
-	ssize_t ret = 0;
+	isize_t ret = 0;
 	uint16_t val, i;
 	uint8_t bool_val;
 	void *pointer_val;
@@ -711,7 +707,7 @@ ssize_t _____unmarshal (const aosl_type_info_t *type, void *typed_obj_p, const a
 	this_obj_addr = (uint8_t *)typed_obj_p + (uintptr_t)type->obj_addr;
 
 	if (type->is_have && !type->is_have(this_obj_addr)) {
-		goto __out;
+		goto __unmarshal_out;
 	}
 
 	switch (type->type_id) {
@@ -760,7 +756,6 @@ ssize_t _____unmarshal (const aosl_type_info_t *type, void *typed_obj_p, const a
 				* Please pay attention to the followings:
 				* 1. 'string', 'bytes' type may not set the 'obj_size' due to it is well known 1;
 				* 2. all non-array type may not set the 'array_size' due to it is a well known 1;
-				* -- by Lionfore Hao Jul 21st, 2018
 				*/
 			if (get_type_size (type->child, &obj_size) < 0)
 				goto __err;
@@ -775,7 +770,6 @@ ssize_t _____unmarshal (const aosl_type_info_t *type, void *typed_obj_p, const a
 			 * We must set the the pointer first to avoid memory leak if encountered error,
 			 * because once we set the pointer, then we can free it when we finish the typed
 			 * object later.
-			 * -- Lionfore Hao Aug 9th, 2018
 			 **/
 			*(void **)this_obj_addr = pointer_val;
 
@@ -821,7 +815,6 @@ ssize_t _____unmarshal (const aosl_type_info_t *type, void *typed_obj_p, const a
 			 * We must set the the pointer first to avoid memory leak if encountered error,
 			 * because once we set the pointer, then we can free it when we finish the typed
 			 * object later.
-			 * -- Lionfore Hao Aug 9th, 2018
 			 **/
 			*(void **)this_obj_addr = pointer_val;
 
@@ -872,7 +865,6 @@ ssize_t _____unmarshal (const aosl_type_info_t *type, void *typed_obj_p, const a
 	 * Fall through: the dynamic string has almost the same decoding mechanism
 	 * with dynamic bytes except it will allocate one more byte for holding the
 	 * terminated '\0' character.
-	 * -- Lionfore Hao Jul 25th, 2018
 	 **/
 	case AOSL_TYPE_DYNAMIC_STRING:
 		__CHECK_AND_DECODE_BASETYPE (uint16_t, &val, uint16_t, __decode_int16, 0);
@@ -891,7 +883,6 @@ ssize_t _____unmarshal (const aosl_type_info_t *type, void *typed_obj_p, const a
 			 * We must set the the pointer first to avoid memory leak if encountered error,
 			 * because once we set the pointer, then we can free it when we finish the typed
 			 * object later.
-			 * -- Lionfore Hao Aug 9th, 2018
 			 **/
 			((aosl_dynamic_array_t *)this_obj_addr)->values = pointer_val;
 
@@ -959,7 +950,6 @@ ssize_t _____unmarshal (const aosl_type_info_t *type, void *typed_obj_p, const a
 			 * We must set the the pointer first to avoid memory leak if encountered error,
 			 * because once we set the pointer, then we can free it when we finish the typed
 			 * object later.
-			 * -- Lionfore Hao Aug 9th, 2018
 			 **/
 			((aosl_dynamic_array_t *)this_obj_addr)->values = pointer_val;
 
@@ -977,7 +967,7 @@ ssize_t _____unmarshal (const aosl_type_info_t *type, void *typed_obj_p, const a
 		goto __err;
 	}
 
-__out:
+__unmarshal_out:
 	*psb_p = psb;
 	return len;
 
@@ -985,7 +975,7 @@ __err:
 	return ret;
 }
 
-static ssize_t smart_unmarshal (const aosl_type_info_t *obj_type, void *obj_addr, const aosl_psb_t *psb)
+static isize_t smart_unmarshal (const aosl_type_info_t *obj_type, void *obj_addr, const aosl_psb_t *psb)
 {
 	return _____unmarshal (obj_type, obj_addr, &psb);
 }
@@ -1001,7 +991,6 @@ static ssize_t smart_unmarshal (const aosl_type_info_t *obj_type, void *obj_addr
  * and for a pointer as a member of a structure, we can only get it's
  * address first, and then retrieve its' value indirectly, so it is
  * impossible to implement this function via passing the pointer's value!
- * -- All Supported by Lionfore Hao 01:36:12 Jul 24th, 2018
  */
 static void smart_init_typed_obj (const aosl_type_info_t *type, const void *typed_obj_p)
 {
@@ -1095,7 +1084,6 @@ static void smart_init_typed_obj (const aosl_type_info_t *type, const void *type
  * and for a pointer as a member of a structure, we can only get it's
  * address first, and then retrieve its' value indirectly, so it is
  * impossible to implement this function via passing the pointer's value!
- * -- All Supported by Lionfore Hao 01:36:12 Jul 25th, 2018
  */
 static void smart_fini_typed_obj (const aosl_type_info_t *type, const void *typed_obj_p)
 {
@@ -1178,17 +1166,17 @@ static void smart_fini_typed_obj (const aosl_type_info_t *type, const void *type
 	}
 }
 
-__export_in_so__ ssize_t aosl_marshal (const aosl_type_info_t *type, const void *typed_obj_p, aosl_psb_t *psb)
+__export_in_so__ isize_t aosl_marshal (const aosl_type_info_t *type, const void *typed_obj_p, aosl_psb_t *psb)
 {
-	ssize_t err;
+	isize_t err;
 
 	err = smart_marshal (type, typed_obj_p, psb);
 	return_err (err);
 }
 
-__export_in_so__ ssize_t aosl_unmarshal (const aosl_type_info_t *type, void *typed_obj_p, const aosl_psb_t *psb)
+__export_in_so__ isize_t aosl_unmarshal (const aosl_type_info_t *type, void *typed_obj_p, const aosl_psb_t *psb)
 {
-	ssize_t err;
+	isize_t err;
 
 	err = smart_unmarshal (type, typed_obj_p, psb);
 	return_err (err);

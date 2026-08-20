@@ -1,40 +1,49 @@
+/***************************************************************************
+ * Module:	generic endian
+ *
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #ifndef __KERNEL_BYTEORDER_GENERIC_H
 #define __KERNEL_BYTEORDER_GENERIC_H
 
 #include <api/aosl_types.h>
 
-// 判断大小端
+// Determine endianness
 #if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && defined(__ORDER_BIG_ENDIAN__)
 
-    #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-        #define COMPILE_TIME_LITTLE_ENDIAN 1
-        #define COMPILE_TIME_BIG_ENDIAN 0
-    #elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-        #define COMPILE_TIME_LITTLE_ENDIAN 0
-        #define COMPILE_TIME_BIG_ENDIAN 1
-    #else
-        #define COMPILE_TIME_LITTLE_ENDIAN 0
-        #define COMPILE_TIME_BIG_ENDIAN 0
-    #endif
+		#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+				#define COMPILE_TIME_LITTLE_ENDIAN 1
+				#define COMPILE_TIME_BIG_ENDIAN 0
+		#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+				#define COMPILE_TIME_LITTLE_ENDIAN 0
+				#define COMPILE_TIME_BIG_ENDIAN 1
+		#else
+				#define COMPILE_TIME_LITTLE_ENDIAN 0
+				#define COMPILE_TIME_BIG_ENDIAN 0
+		#endif
 
 #elif defined(__LITTLE_ENDIAN__) || defined(_LITTLE_ENDIAN) || \
-      defined(__ARMEL__) || defined(__THUMBEL__) || defined(__AARCH64EL__) || \
-      defined(__MIPSEL__) || defined(__MIPSEL) || defined(_MIPSEL) || \
-      defined(__i386__) || defined(__x86_64__) || defined(_M_X64) || defined(_M_IX86)
+			defined(__ARMEL__) || defined(__THUMBEL__) || defined(__AARCH64EL__) || \
+			defined(__MIPSEL__) || defined(__MIPSEL) || defined(_MIPSEL) || \
+			defined(__i386__) || defined(__x86_64__) || defined(_M_X64) || defined(_M_IX86) || \
+			defined(_M_ARM) || defined(_M_ARM64) || defined(_M_ARM64EC)
 
-    // 小端架构的特定宏
-    #define COMPILE_TIME_LITTLE_ENDIAN 1
-    #define COMPILE_TIME_BIG_ENDIAN 0
+		// Specific macros for little-endian architectures
+		#define COMPILE_TIME_LITTLE_ENDIAN 1
+		#define COMPILE_TIME_BIG_ENDIAN 0
 
 #elif defined(__BIG_ENDIAN__) || defined(_BIG_ENDIAN) || \
-      defined(__ARMEB__) || defined(__THUMBEB__) || defined(__AARCH64EB__) || \
-      defined(__MIPSEB__) || defined(__MIPSEB) || defined(_MIPSEB) || \
-      defined(__powerpc__) || defined(__POWERPC__) || defined(_M_PPC) || \
-      defined(__sparc__) || defined(__sparc)
+			defined(__ARMEB__) || defined(__THUMBEB__) || defined(__AARCH64EB__) || \
+			defined(__MIPSEB__) || defined(__MIPSEB) || defined(_MIPSEB) || \
+			defined(__powerpc__) || defined(__POWERPC__) || defined(_M_PPC) || \
+			defined(__sparc__) || defined(__sparc)
 
-    // 大端架构的特定宏
-    #define COMPILE_TIME_LITTLE_ENDIAN 0
-    #define COMPILE_TIME_BIG_ENDIAN 1
+		// Specific macros for big-endian architectures
+		#define COMPILE_TIME_LITTLE_ENDIAN 0
+		#define COMPILE_TIME_BIG_ENDIAN 1
 
 #else
 #error "Can't recognize cpu byte order"

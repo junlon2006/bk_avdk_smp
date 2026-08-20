@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Oct 22nd, 2020
+/***************************************************************************
  * Module:	poll MP relative functionals implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 ~ 2020 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #include <hal/aosl_hal_iomp.h>
 #include <hal/aosl_hal_errno.h>
 #if defined(AOSL_HAL_HAVE_POLL) && AOSL_HAL_HAVE_POLL == 1
@@ -17,6 +14,7 @@
 #include <api/aosl_types.h>
 #include <kernel/err.h>
 #include <api/aosl_time.h>
+#include <api/aosl_alloca.h>
 #include <kernel/mp_queue.h>
 
 
@@ -67,11 +65,11 @@ int os_mp_wait_poll (struct mp_queue *q, aosl_poll_event_t *events, int maxevent
 	struct iofd *f = NULL;
 
 	if (q->iofd_count > POLL_MAX_FDS)
-		return -ENFILE;
+		return -AOSL_ENFILE;
 
 	fds_count = q->iofd_count;
 	fds_count++;
-	fds = (aosl_poll_event_t *)alloca (sizeof (aosl_poll_event_t) * fds_count);
+	fds = (aosl_poll_event_t *)aosl_alloca (sizeof (aosl_poll_event_t) * fds_count);
 
 	if (timeo > 0)
 		time_stamp = aosl_tick_now ();
@@ -91,7 +89,7 @@ __again:
 	pfd->revents = 0;
 	pfd++;
 
-	list_for_each_entry_t (struct iofd, f, &q->iofds, node) {
+	aosl_list_for_each_entry_t (struct iofd, f, &q->iofds, node) {
 		pfd->fd = iofd_fobj (f)->fd;
 		pfd->events = 0;
 		pfd->revents = 0;
@@ -112,7 +110,7 @@ __again:
 	if (err > 0) {
 		int i;
 		for (i = 0; i < maxevents; i++) {
-			events [i].fd = -1;
+			events [i].fd = AOSL_INVALID_FD;
 			events [i].events = 0;
 		}
 
@@ -129,7 +127,7 @@ __again:
 
 		pfd++;
 
-		list_for_each_entry_t (struct iofd, f, &q->iofds, node) {
+		aosl_list_for_each_entry_t (struct iofd, f, &q->iofds, node) {
 			BUG_ON (pfd->fd != iofd_fobj (f)->fd);
 
 			if (pfd->revents & AOSL_POLLIN) {
@@ -180,7 +178,6 @@ void os_mp_dispatch_poll (struct mp_queue *q, aosl_poll_event_t *events, int eve
 			 * a prior io fd. We should try our best to avoid these kinds of senario,
 			 * but some program may do as this according to some special logic.
 			 * So, just ignore these outdated events read by the prior syscall.
-			 * -- Lionfore Hao Nov 9th, 2018
 			 **/
 			continue;
 		}

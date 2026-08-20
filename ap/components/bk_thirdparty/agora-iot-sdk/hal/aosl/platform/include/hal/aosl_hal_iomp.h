@@ -1,13 +1,11 @@
-/*************************************************************
- * Author:	zhangguanxian@agora.io
- * Date	 :	2025/12/16
+/***************************************************************************
  * Module:	Io multiplexing hal definitions.
  *
- * This is a part of the Agora RTC Service SDK.
- * Copyright (C) 2025 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #ifndef __AOSL_HAL_IOMP_H__
 #define __AOSL_HAL_IOMP_H__
 
@@ -15,6 +13,7 @@
 #include <stdbool.h>
 #include <hal/aosl_hal_config.h>
 #include <hal/aosl_hal_errno.h>
+#include <hal/aosl_hal_types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,7 +43,7 @@ typedef enum {
  * @brief poll event structure
  */
 typedef struct {
-	int fd;
+	aosl_fd_t fd;
 	uint32_t events;
 	uint32_t revents; // only for poll
 } aosl_poll_event_t;
@@ -58,7 +57,7 @@ typedef struct {
  * @brief create epoll instance
  * @return epoll file descriptor, or -1 on error
  */
-int aosl_hal_epoll_create();
+int aosl_hal_epoll_create(void);
 
 /**
  * @brief destroy epoll instance
@@ -75,7 +74,7 @@ int aosl_hal_epoll_destroy(int epfd);
  * @param [out] ev  event lists
  * @return 0 on success, or -1 on error
  */
-int aosl_hal_epoll_ctl(int epfd, aosl_epoll_op_e op, int fd, aosl_poll_event_t *ev);
+int aosl_hal_epoll_ctl(int epfd, aosl_epoll_op_e op, aosl_fd_t fd, aosl_poll_event_t *ev);
 
 /**
  * @brief wait for events on epoll instance
@@ -104,7 +103,7 @@ typedef void* fd_set_t;
  * @brief create fd_set
  * @return fd_set handle, or NULL on error
  */
-fd_set_t aosl_hal_fdset_create();
+fd_set_t aosl_hal_fdset_create(void);
 
 /**
  * @brief destroy fd_set
@@ -123,14 +122,14 @@ void aosl_hal_fdset_zero(fd_set_t fdset);
  * @param [in/out] fdset fd set handle
  * @param [in] fd  file descriptor to be set
  */
-void aosl_hal_fdset_set(fd_set_t fdset, int fd);
+void aosl_hal_fdset_set(fd_set_t fdset, aosl_fd_t fd);
 
 /**
  * @brief clear fd in fd_set
  * @param [in/out] fdset fd set handle
  * @param [in] fd  file descriptor to be cleared
  */
-void aosl_hal_fdset_clr(fd_set_t fdset, int fd);
+void aosl_hal_fdset_clr(fd_set_t fdset, aosl_fd_t fd);
 
 /**
  * @brief check if fd is set in fd_set
@@ -138,7 +137,7 @@ void aosl_hal_fdset_clr(fd_set_t fdset, int fd);
  * @param [in] fd  file descriptor to be checked
  * @return non-zero if fd is set, otherwise zero
  */
-int aosl_hal_fdset_isset(fd_set_t fdset, int fd);
+int aosl_hal_fdset_isset(fd_set_t fdset, aosl_fd_t fd);
 
 /**
  * @brief select function

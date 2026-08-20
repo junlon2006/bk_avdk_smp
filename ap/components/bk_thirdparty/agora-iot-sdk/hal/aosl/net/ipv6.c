@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Aug 18th, 2018
+/***************************************************************************
  * Module:	IPv6 relative implementations
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #include <string.h>
 #include <kernel/err.h>
@@ -22,6 +19,8 @@
 #include <api/aosl_mpq_net.h>
 
 #define IPV6_ADDR_SCOPE_TYPE(scope)	((scope) << 16)
+
+#define UNUSED(expr) (void)(expr)
 
 static inline unsigned int ipv6_addr_scope2type (unsigned int scope)
 {
@@ -164,7 +163,6 @@ static void ____q_update_ipv6_prefix (struct mp_queue *q, const aosl_in6_addr_t 
 		 * We only save the IPv6 prefix for neither v4mapped nor nat64 cases,
 		 * because we can handle these two special cases without the saved
 		 * prefix.
-		 * -- Lionfore Hao Aug 19th, 2018
 		 **/
 		if (!(ipv6_addr_v4mapped (a6) || ipv6_addr_nat64 (a6))) {
 			if (q->ipv6_prefix_96 == NULL)
@@ -185,6 +183,11 @@ static void ____target_q_set_ipv6_prefix (const aosl_ts_t *queued_ts_p, aosl_ref
 {
 	const aosl_in6_addr_t *a6 = (const aosl_in6_addr_t *)argv [0];
 	struct mp_queue *q = THIS_MPQ ();
+
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+	UNUSED (argc);
+
 	____q_update_ipv6_prefix (q, a6);
 }
 
@@ -210,7 +213,7 @@ __export_in_so__ int aosl_mpq_set_ipv6_prefix_on_q (aosl_mpq_t qid, const aosl_i
 	return 0;
 }
 
-__export_in_so__ const aosl_in6_addr_t *aosl_mpq_get_ipv6_prefix ()
+__export_in_so__ const aosl_in6_addr_t *aosl_mpq_get_ipv6_prefix (void)
 {
 	struct mp_queue *q;
 

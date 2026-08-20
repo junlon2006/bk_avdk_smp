@@ -3,18 +3,57 @@
 #include <posix/pthread.h>
 #include <os/os.h>
 #include <assert.h>
+#include <string.h>
 
 #include <api/aosl_mm.h>
 #include <api/aosl_log.h>
 #include <api/aosl_defs.h>
 #include <hal/aosl_hal_thread.h>
 
+// Verify that AOSL_STATIC_MUTEX_SIZE is large enough for pthread_mutex_t
+aosl_static_assert(sizeof(pthread_mutex_t) <= AOSL_STATIC_MUTEX_SIZE, 
+                   static_mutex_size_check);
+
+// Wrapper structure to pass pthread-style entry function to FreeRTOS task
+typedef struct {
+  void *(*entry)(void *);
+  void *arg;
+} thread_wrapper_args_t;
+
+// Wrapper function to convert pthread-style entry to FreeRTOS task
+static void thread_wrapper(void *arg)
+{
+  thread_wrapper_args_t *wrapper_args = (thread_wrapper_args_t *)arg;
+  void *(*entry)(void *) = wrapper_args->entry;
+  void *user_arg = wrapper_args->arg;
+  
+  // Free the wrapper args
+  aosl_free(wrapper_args);
+  
+  // Call the pthread-style entry function
+  void *retval = entry(user_arg);
+  
+  // FreeRTOS tasks should not return, so delete the task
+  (void)retval;
+  rtos_delete_thread(NULL);
+}
+
 int aosl_hal_thread_create(aosl_thread_t *thread, aosl_thread_param_t *param,
                            void *(*entry)(void *), void *arg)
 {
   assert(sizeof(beken_thread_t) <= sizeof(aosl_thread_t));
+  
+  // Allocate wrapper args to pass both entry function and user args
+  thread_wrapper_args_t *wrapper_args = aosl_malloc(sizeof(thread_wrapper_args_t));
+  if (!wrapper_args) {
+    return -1;
+  }
+  wrapper_args->entry = entry;
+  wrapper_args->arg = arg;
+  
   beken_thread_t beken_thread = NULL;
-  rtos_create_psram_thread(&beken_thread, 2, param->name, (beken_thread_function_t)entry, 1024 * 12, (beken_thread_arg_t)arg);
+  rtos_core0_create_psram_thread(&beken_thread, 2, param->name, (beken_thread_function_t)thread_wrapper,
+    1024 * 12, (beken_thread_arg_t)wrapper_args);
   *thread = (aosl_thread_t)beken_thread;
   return 0;
 }
@@ -38,6 +77,13 @@ aosl_thread_t aosl_hal_thread_self()
 int aosl_hal_thread_set_name(const char *name)
 {
   return 0;
+}
+
+int aosl_hal_thread_get_name(char *name, size_t size)
+{
+  (void)name;
+  (void)size;
+  return -1;
 }
 
 int aosl_hal_thread_set_priority(aosl_thread_proiority_e priority)
@@ -96,6 +142,24 @@ int aosl_hal_mutex_trylock(aosl_mutex_t mutex)
 int aosl_hal_mutex_unlock(aosl_mutex_t mutex)
 {
   return pthread_mutex_unlock((pthread_mutex_t *)mutex);
+}
+
+int aosl_hal_static_mutex_init(aosl_static_mutex_t *mutex)
+{
+  if (!mutex) {
+    return -1;
+  }
+
+  // Initialize with PTHREAD_MUTEX_INITIALIZER and copy to opaque array
+  pthread_mutex_t init_mutex = PTHREAD_MUTEX_INITIALIZER;
+  memcpy(mutex->opaque, &init_mutex, sizeof(pthread_mutex_t));
+  
+  return 0;
+}
+
+void aosl_hal_static_mutex_fini(aosl_static_mutex_t *mutex)
+{
+  (void)mutex;
 }
 
 aosl_cond_t aosl_hal_cond_create(void)
@@ -169,7 +233,8 @@ int aosl_hal_cond_timedwait(aosl_cond_t cond, aosl_mutex_t mutex, intptr_t timeo
 
   struct timespec timeo;
   struct timespec now;
-  clock_gettime (CLOCK_MONOTONIC, &now);
+  // Use CLOCK_REALTIME because pthread_cond_timedwait uses CLOCK_REALTIME by default
+  clock_gettime (CLOCK_REALTIME, &now);
   timeo.tv_sec = now.tv_sec + timeout / 1000;
   timeo.tv_nsec = now.tv_nsec + (timeout % 1000) * 1000000;
   while (timeo.tv_nsec >= 1000000000) {

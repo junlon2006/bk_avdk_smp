@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 28th, 2018
+/***************************************************************************
  * Module:	memory management relatives implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #ifndef CONFIG_AOSL_MEM_STAT
 #undef CONFIG_AOSL_MEM_DUMP
@@ -20,6 +17,8 @@
 #include <kernel/rbtree.h>
 #include <api/aosl_mm.h>
 #include <hal/aosl_hal_memory.h>
+
+#define UNUSED(expr) (void)(expr)
 
 #define MALLOC    aosl_hal_malloc
 #define FREE      aosl_hal_free
@@ -169,7 +168,7 @@ static struct aosl_rb_root __mm_pos_tree = {NULL, __mm_pos_cmp, 0};
 #endif
 
 static struct aosl_rb_root __mm_ptr_tree = {NULL, __mm_ptr_cmp, 0};
-static k_lock_t __lock;
+static k_lock_t __lock = {0};
 
 static int __mem_check_inited = 0;
 static int __mem_check_enable = 1;
@@ -290,7 +289,7 @@ if (ptr_node && ptr_node->func && ptr_node->line) {
 }
 #endif
 
-__export_in_so__ size_t aosl_memused()
+__export_in_so__ size_t aosl_memused(void)
 {
 #ifdef CONFIG_AOSL_MEM_STAT
 	return __mem_used;
@@ -299,10 +298,15 @@ __export_in_so__ size_t aosl_memused()
 #endif
 }
 
-__export_in_so__ void aosl_memdump()
+__export_in_so__ void aosl_memdump(void)
 {
 #ifdef CONFIG_AOSL_MEM_DUMP
 	uint32_t index = 0;
+
+	if (!__mem_check_inited || !__mem_check_enable) {
+		return;
+	}
+
 	k_lock_lock (&__lock);
 
 #if 0 // dump ptr node info
@@ -330,6 +334,10 @@ __export_in_so__ void aosl_memdump()
 __export_in_so__ int  aosl_memdump_r(int cnts[2], char *buf, int len)
 {
 #ifdef CONFIG_AOSL_MEM_DUMP
+	if (!__mem_check_inited || !__mem_check_enable) {
+		return -1;
+	}
+
 	if (len <= 0) {
 		return -1;
 	}
@@ -337,11 +345,15 @@ __export_in_so__ int  aosl_memdump_r(int cnts[2], char *buf, int len)
 	int vlen = 0; // valid printed len(exclude null)
 	arg.buf = buf;
 	arg.len = len;
-	k_lock_lock (&__lock);
+	if (__mem_check_inited) {
+		k_lock_lock (&__lock);
+	}
 	aosl_rb_traverse_ldr(&__mm_pos_tree, __mm_pos_walk_r, &arg);
 	cnts[0] = __mm_pos_tree.count;  // total
 	cnts[1] = arg.index;            // walk
-	k_lock_unlock (&__lock);
+	if (__mem_check_inited) {
+		k_lock_unlock (&__lock);
+	}
 
 	// -1: for \0
 	// -1: for \n
@@ -354,11 +366,14 @@ __export_in_so__ int  aosl_memdump_r(int cnts[2], char *buf, int len)
 	buf[vlen+1] = '\0';
 	return 0;
 #else
+	UNUSED (cnts);
+	UNUSED (buf);
+	UNUSED (len);
 	return -1;
 #endif
 }
 
-void k_aosl_mm_init (void)
+void k_mm_init (void)
 {
 #ifdef CONFIG_AOSL_MEM_STAT
 	k_lock_init (&__lock);
@@ -367,12 +382,20 @@ void k_aosl_mm_init (void)
 #endif
 }
 
-void k_ahpl_mm_deinit (void)
+void k_mm_fini (void)
 {
 #ifdef CONFIG_AOSL_MEM_STAT
-	k_lock_destroy (&__lock);
+	aosl_memdump();
+
+	k_lock_lock (&__lock);
+	aosl_rb_clear(&__mm_ptr_tree, struct mm_ptr_node, node, FREE);
+#ifdef CONFIG_AOSL_MEM_DUMP
+	aosl_rb_clear(&__mm_pos_tree, struct mm_pos_node, node, FREE);
+#endif
 	__mem_used = 0;
 	__mem_check_inited = 0;
+	k_lock_unlock (&__lock);
+	k_lock_destroy (&__lock);
 #endif
 }
 

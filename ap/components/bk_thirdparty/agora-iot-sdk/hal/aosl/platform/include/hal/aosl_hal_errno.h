@@ -1,13 +1,11 @@
-/*************************************************************
- * Author:	zhangguanxian@agora.io
- * Date	 :	2025/12/16
+/***************************************************************************
  * Module:	errno hal definitions.
  *
- * This is a part of the Agora RTC Service SDK.
- * Copyright (C) 2025 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #ifndef __AOSL_HAL_ERRNO_H__
 #define __AOSL_HAL_ERRNO_H__
 
@@ -17,13 +15,15 @@ extern "C" {
 
 #define AOSL_HAL_RET_SUCCESS          0
 #define AOSL_HAL_RET_FAILURE         -1
+#define AOSL_HAL_RET_EHAL            -2000
 #define AOSL_HAL_RET_EAGAIN          -2001
 #define AOSL_HAL_RET_EINTR           -2002
+#define AOSL_HAL_RET_EINPROGRESS     -2003
 
 /**
  * @brief Convert standard errno to AOSL HAL error codes
- * @param [in] errnum The standard errno value
- * @return Corresponding AOSL HAL error code
+ * @param [in] errnum system errno value
+ * @return Corresponding AOSL HAL error number
  */
 int aosl_hal_errno_convert(int errnum);
 

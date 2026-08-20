@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 27th, 2018
+/***************************************************************************
  * Module:	DNS resolve asynchronously helper implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,8 +18,9 @@
 #include <api/aosl_mpq_net.h>
 #include <kernel/kernel.h>
 #include <kernel/err.h>
-#include <kernel/mp_queue.h>
 #include <hal/aosl_hal_socket.h>
+
+#define UNUSED(expr) (void)(expr)
 
 #define MAX_DNS_RES_CNT 8
 /**
@@ -83,6 +81,8 @@ static int __resolved_an_addr (int af, int socktype, int prot, aosl_sockaddr_t *
 	aosl_sk_addrinfo_t *addrs = va_arg (args, aosl_sk_addrinfo_t *);
 	size_t addr_count = va_arg (args, size_t);
 
+	UNUSED (timeo);
+
 	if (index < (unsigned int)addr_count) {
 		aosl_sk_addrinfo_t *sai = &addrs [index];
 		sai->sk_af = af;
@@ -108,7 +108,7 @@ static void __queue_resolve_async_reply (aosl_mpq_t q, aosl_ref_t ref,
 	 * the 2nd arg is the resolved address count;
 	 * the 3rd arg is addrs memory;
 	 **/
-	this_argv = alloca (sizeof (uintptr_t) * (3 + argc));
+	this_argv = aosl_alloca (sizeof (uintptr_t) * (3 + argc));
 	this_argv [0] = (uintptr_t)str_addr; /* the resolving addr name */
 	this_argv [1] = resolved_count; /* the resolved address count */
 	this_argv [2] = (uintptr_t)addrs; /* the address memory passed by requester */
@@ -120,7 +120,7 @@ static void __queue_resolve_async_reply (aosl_mpq_t q, aosl_ref_t ref,
 	/**
 	 * Update the ipv6 address prefix possibly
 	 */
-	for (int i = 0; i < resolved_count; i++) {
+	for (size_t i = 0; i < resolved_count; i++) {
 		if (addrs[i].sk_af == AOSL_AF_INET6) {
 			aosl_mpq_set_ipv6_prefix_on_q(q, &addrs[i].sk_addr.in6.sin6_addr);
 		}
@@ -133,7 +133,6 @@ static void __queue_resolve_async_reply (aosl_mpq_t q, aosl_ref_t ref,
 	 * when queue back the result failed!
 	 * Obviously, it should be the requesting thread's responsibility to
 	 * free the allocated memory when we queued back the result successfully.
-	 * -- Lionfore Hao Jul 31st, 2018
 	 **/
 	if (aosl_mpq_queue_argv (q, AOSL_MPQ_INVALID, ref, "queue_resolve_async_reply", f, 3 + argc, this_argv) < 0) {
 		aosl_ts_t now = aosl_tick_now ();
@@ -154,10 +153,11 @@ static void ____dns_resolve_host (const aosl_ts_t *queued_ts_p, aosl_refobj_t ro
 	aosl_mpq_func_argv_t f = (aosl_mpq_func_argv_t)argv [7];
 	uintptr_t f_argc = argv [8];
 
-	int not_free_only = __is_mpq_valid(q);
-	if (not_free_only) {
-		count = hostbyname_timed_do (hostname, port, sk_type, sk_prot, 0, __resolved_an_addr, addrs, addr_count);
-	}
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+	UNUSED (argc);
+
+	count = hostbyname_timed_do (hostname, port, sk_type, sk_prot, 0, __resolved_an_addr, addrs, addr_count);
 
 	__queue_resolve_async_reply (q, AOSL_REF_INVALID, f, f_argc, &argv [9], hostname, count, addrs);
 }
@@ -174,7 +174,7 @@ static int __prot_resolve_host_async_args (const char *hostname, unsigned short 
 		return -1;
 	}
 
-	argv = alloca (sizeof (uintptr_t) * (9 + argc));
+	argv = aosl_alloca (sizeof (uintptr_t) * (9 + argc));
 	argv [0] = (uintptr_t)hostname;
 	argv [1] = port;
 	argv [2] = sk_type;

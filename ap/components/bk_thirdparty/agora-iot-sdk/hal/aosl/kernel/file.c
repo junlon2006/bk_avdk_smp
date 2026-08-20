@@ -1,15 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Aug 16th, 2020
- * Module:	AOSL regular file async read/write operations
- *          implementation file
+/***************************************************************************
+ * Module:	AOSL regular file operations implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2020 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #include <api/aosl_file.h>
 
@@ -26,7 +22,7 @@ __export_in_so__ int aosl_rmdir(const char *path)
 	return aosl_hal_rmdir(path);
 }
 
-__export_in_so__ size_t aosl_fsize(const char *path)
+__export_in_so__ int aosl_fsize(const char *path)
 {
 	return aosl_hal_fsize(path);
 }
@@ -61,12 +57,12 @@ __export_in_so__ int aosl_fclose(aosl_fs_t fs)
 	return aosl_hal_fclose(fs);
 }
 
-__export_in_so__ size_t aosl_fread(aosl_fs_t fs, void *buf, size_t size)
+__export_in_so__ int aosl_fread(aosl_fs_t fs, void *buf, size_t size)
 {
 	return aosl_hal_fread(fs, buf, size);
 }
 
-__export_in_so__ size_t aosl_fwrite(aosl_fs_t fs, const void *buf, size_t size)
+__export_in_so__ int aosl_fwrite(aosl_fs_t fs, const void *buf, size_t size)
 {
 	return aosl_hal_fwrite(fs, buf, size);
 }

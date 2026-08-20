@@ -17,16 +17,14 @@
 extern "C" {
 #endif
 
-#if defined(_MSC_VER)
-#if defined(__BUILDING_AGORA_SDK__)
+
+#if defined (_MSC_VER) && defined(BUILD_TARGET_SHARED) && defined(AGORA_BUILDING_API)
 #define __agora_api__ __declspec(dllexport)
-#else
+#elif defined (_MSC_VER) && defined(BUILD_TARGET_SHARED) && !defined(AGORA_BUILDING_API)
 #define __agora_api__ __declspec(dllimport)
-#endif
 #else
 #define __agora_api__
 #endif
-
 
 #define AGORA_RTC_CHANNEL_NAME_MAX_LEN (64)
 #define AGORA_RTC_PRODUCT_ID_MAX_LEN (63)
@@ -149,6 +147,10 @@ typedef enum {
   ERR_OPEN_CHANNEL_TRY_NEXT_VOS = 122,
   /** Client is banned by the server */
   ERR_CLIENT_IS_BANNED_BY_SERVER = 123,
+  /** Invalid user account */
+  ERR_INVALID_USER_ACCOUNT = 124,
+  /** Register user account failed common error */
+  ERR_REGISTER_USER_ACCOUNT = 125,
 #endif // RTN End
 
 /******************************************************************************|
@@ -215,6 +217,7 @@ typedef enum {
   ERR_RTM_EXCEED_MSG_SIZE = 1004,
   ERR_RTM_EXCEED_MSG_CNT = 1005,
   ERR_RTM_EXCEED_SND_BUFFER = 1006,
+  ERR_RTM_CUSTOM_TYPE_OUT_OF_LENGTH = 1007,
 #endif // RTM End
 
 } agora_err_code_e;
@@ -338,6 +341,14 @@ typedef enum {
 } video_orientation_e;
 
 /**
+ * @brief The video sei data
+ */
+typedef struct {
+  char *sei_data;
+  int   sei_data_len;
+} video_sei_t;
+
+/**
  * The definition of the video_frame_info_t struct.
  */
 typedef struct {
@@ -364,6 +375,11 @@ typedef struct {
    * The rotation information of the encoded video frame: #VIDEO_ORIENTATION.
    */
   video_orientation_e rotation;
+
+  /**
+   * The video sei data
+   */
+  video_sei_t sei_data;
 } video_frame_info_t;
 
 /**
@@ -632,6 +648,7 @@ typedef struct {
   int pcm_duration;
 } audio_codec_option_t;
 
+
 /**
  * @brief rtc packet type enum
  * @technical preview
@@ -646,6 +663,7 @@ typedef enum {
   // 4: rdt packet type.
   RTC_PACKET_TYPE_RDT,
 } rtc_packet_type_e;
+
 
 /**
  * The definition of the rtc_channel_options_t struct.
@@ -670,10 +688,18 @@ typedef struct {
   // local audio encode configuration when send pcm audio data by #agora_rtc_send_audio_data
   audio_codec_option_t audio_codec_opt;
 
+
   // enable rdt feature
   bool enable_rdt;
 
+  /**
+   * audio jitter buffer output frame duration in ms.
+   * supported: 20, 40, 60; 0 means use default (20ms)
+   * only valid when enable_audio_jitter_buffer is true
+   */
+  int audio_jitter_frame_duration;
 } rtc_channel_options_t;
+
 
 /**
  * Network event type enum
@@ -686,12 +712,13 @@ typedef enum {
   NETWORK_EVENT_CHANGE,
 } network_event_e;
 
+
 /**
  * Reliable Data Transmission Tunnel message type
  */
 typedef enum rdt_stream_type {
   RDT_STREAM_CMD,    // Reliable; High priority; Limit 256 bytes per packet, 100 packets per second
-  RDT_STREAM_DATA,   // Reliable; Low priority; Restricted by congestion control; Limit 1024 bytes per packet
+  RDT_STREAM_DATA,   // Reliable; Low priority; Restricted by congestion control; Limit 128K bytes per packet
   RDT_STREAM_COUNT,
 } rdt_stream_type_e;
 
@@ -716,6 +743,7 @@ typedef struct rdt_status_info {
   int send_queue_size[RDT_STREAM_COUNT];  // queue size of waiting for send
   int recv_queue_size[RDT_STREAM_COUNT];  // queue size of waitting for delivery
 } rdt_status_info_t;
+
 
 /**
  * Connection identification
@@ -1061,6 +1089,25 @@ extern const char *agora_rtc_get_version(void);
 extern __agora_api__ const char *agora_rtc_err_2_str(int err);
 
 /**
+ * @brief Get heap memory used size(KB) of sdk
+ * @return
+ *    >=0 : memory user size (KB)
+ *    < 0 : error
+ * @technical preview
+ */
+extern __agora_api__ int agora_rtc_get_memory_used(void);
+
+/**
+ * @brief Dump heap memory used info
+ * @return
+ *    >=0 : dump success
+ *    < 0 : failed
+ * @technical preview
+ */
+extern __agora_api__ int agora_rtc_dump_memory_info(void);
+
+
+/**
  * @brief Initialize the Agora RTSA service.
  * @note Each process can only be initialized once.
  * @param[in] app_id          Application ID
@@ -1274,7 +1321,6 @@ extern __agora_api__ int agora_rtc_mute_local_audio(connection_id_t conn_id, boo
  * - < 0: Failure
  */
 extern __agora_api__ int agora_rtc_mute_local_video(connection_id_t conn_id, bool mute);
-
 /**
  * @brief Decide whether to enable/disable receiving remote audio data from specific channel OR all channels.
  * @param[in] conn_id      Connection identification, if set CONNECTION_ID_ALL(0) is for all connections
@@ -1318,7 +1364,6 @@ extern __agora_api__ int agora_rtc_mute_remote_video(connection_id_t conn_id, ui
  */
 extern __agora_api__ int agora_rtc_request_video_key_frame(connection_id_t conn_id, uint32_t remote_uid,
                                                            video_stream_type_e stream_type);
-
 /**
  * @brief Send an audio frame to all channels OR specific channel.
  *        All remote users in this channel will receive the audio frame.
@@ -1363,6 +1408,9 @@ extern __agora_api__ int agora_rtc_send_video_data(connection_id_t conn_id, cons
  */
 extern __agora_api__ int agora_rtc_set_bwe_param(connection_id_t conn_id, uint32_t min_bps, uint32_t max_bps,
                                                  uint32_t start_bps);
+
+
+
 
 /**
  * Set config params
@@ -1426,6 +1474,7 @@ extern __agora_api__ int agora_rtc_send_rdt_msg(connection_id_t conn_id, uint32_
  */
 extern __agora_api__ int agora_rtc_get_rdt_status_info(connection_id_t conn_id, uint32_t remote_uid, rdt_status_info_t *info);
 
+
 /**
 * Creates a data stream.
 *
@@ -1467,6 +1516,158 @@ extern __agora_api__ int agora_rtc_create_data_stream(connection_id_t conn_id, i
 * - < 0: Failure.
 */
 extern __agora_api__ int agora_rtc_send_stream_message(connection_id_t conn_id, int stream_id, const char* data, size_t length);
+
+
+/** RTM **/
+
+/**
+ * RTM event type list
+ */
+typedef enum {
+  /**
+   * 0: LOGIN
+   */
+  RTM_EVENT_TYPE_LOGIN = 0,
+  /**
+   * 1: KICKOFF
+   */
+  RTM_EVENT_TYPE_KICKOFF = 1,
+  /**
+   * 2: EXIT
+   */
+  RTM_EVENT_TYPE_EXIT = 2,
+} rtm_event_type_e;
+
+/**
+ * RTM message send state
+ */
+typedef enum {
+  // initial msg state
+  RTM_MSG_STATE_INIT = 0,
+  // msg had been received by peer
+  RTM_MSG_STATE_RECEIVED,
+  // peer maybe not received the msg
+  RTM_MSG_STATE_UNREACHABLE,
+  // msg had been timeout(10s)
+  RTM_MSG_STATE_TIMEOUT,
+} rtm_msg_state_e;
+
+/**
+ * RTM error code
+ */
+typedef enum {
+  /** no error */
+  ERR_RTM_OK = 0,
+  /** general error */
+  ERR_RTM_FAILED = 1,
+  /** Login is rejected by the server. */
+  ERR_RTM_LOGIN_REJECTED = 2,
+  /**  invalid rtm uid */
+  ERR_RTM_INVALID_RTM_UID = 3,
+  /** The token is invalid. */
+  ERR_RTM_LOGIN_INVALID_TOKEN = 5,
+  /** Unauthorized login. */
+  ERR_RTM_LOGIN_NOT_AUTHORIZED = 7,
+  ERR_RTM_LOCAL_NETDOWN = 8,
+  ERR_RTM_LOCAL_INTERRUPT = 9,
+  ERR_RTM_LOCAL_TIMEOUT = 10,
+  ERR_RTM_SERVER_TIMEOUT = 11,
+
+  /**  invalid appid, 101 */
+  ERR_RTM_INVALID_APP_ID = ERR_INVALID_APP_ID,
+  /** The server rejected the request to look up the channel, 105 */
+  WARN_RTM_LOOKUP_CHANNEL_REJECTED = ERR_LOOKUP_CHANNEL_REJECTED,
+  /** Authorized Timestamp expired, 109 */
+  ERR_RTM_TOKEN_EXPIRED = ERR_TOKEN_EXPIRED,
+  /** invalid token, 110 */
+  ERR_RTM_INVALID_TOKEN = ERR_INVALID_TOKEN,
+
+} rtm_err_code_e;
+
+
+/**
+ * Agora RTC SDK RTM event handler
+ */
+typedef struct {
+    /**
+   * Occurs when RTM event occurs
+   * @param[in] rtm_uid    RTM UID
+   * @param[in] event_type Event type
+   * @param[in] event_info Event info of event type
+   */
+  void (*on_rtm_event)(const char *rtm_uid, rtm_event_type_e event_type, rtm_err_code_e err_code);
+
+  /**
+   * Occurs when data comes from RTM
+   * @param[in] rtm_uid    The remote rtm uid which the data come from.
+   * @param[in] msg        The Data received.
+   * @param[in] msg_len    Length of the data received.
+   * @param[in] custom_type Custom type of the data received.
+   */
+  void (*on_rtm_data)(const char *rtm_uid, const void *msg, size_t msg_len, const char *custom_type);
+
+  /**
+   * Report the result of the "agora_rtc_send_rtm_data" method call
+   * @param[in] rtm_uid    RTM UID
+   * @param[in] msg_id     Identify one message
+   * @param[in] error_code Error code number
+   *                       - 0 : success
+   *                       - 1 : failure
+   */
+  void (*on_rtm_send_data_result)(const char *rtm_uid, uint32_t msg_id, rtm_msg_state_e state);
+
+} agora_rtm_handler_t;
+
+/**
+ * Login agora RTM service
+ * @param[in] rtm_uid   RTM user id (different from uid)
+ *                      Length should be less than 64 bytes
+ *                      Supported character scopes are:
+ *                      - The 26 lowercase English letters: a to z
+ *                      - The 26 uppercase English letters: A to Z
+ *                      - The 10 numbers: 0 to 9
+ *                      - The space
+ *                      - "!", "#", "$", "%", "&", "(", ")", "+", "-", ":",
+ *                        ";", "<", "=", ".", ">", "?", "@", "[", "]", "^",
+ *                        "_", " {", "}", "|", "~", ","
+* @param[in] rtm_token  RTM token string generated by the token server (different from RTC token)
+ *                      - if token authorization is enabled on developer website, it should be set correctly
+ *                      - else token can be set as `NULL`
+ * @param[in] handler   A set of callback that handles Agora RTM events
+ *
+ * @return
+ * - = 0: Success
+ * - < 0: Failure
+ */
+extern __agora_api__ int agora_rtc_login_rtm(const char *rtm_uid, const char *rtm_token,
+                                             const agora_rtm_handler_t *handler);
+
+/**
+ * Logout agora RTM service
+ *
+ * @return
+ * - = 0: Success
+ * - < 0: Failure
+ */
+
+extern __agora_api__ int agora_rtc_logout_rtm(void);
+
+/**
+ * Send data through Real-time Messaging (RTM) mechanism, which is a stable and reliable data channel
+ * @note RTM channel is not available by default, unless login success and callback `on_rtm_event`
+         is triggered. The sending speed allowed is limited to 60 messages per second (60qps)
+ *
+ * @param[in] rtm_uid     RTM UID
+ * @param[in] msg     Message to send
+ * @param[in] msg_len Length of the message(max size: 31KB)
+ * @param[in] msg_id Identify the message sent
+ * @param[in] custom_type Designed by customer(max length: 32bytes). Only string types are supported.Set as NULL if not need.
+ *
+ * @return:
+ * - = 0: Success
+ * - < 0: Failure
+ */
+extern __agora_api__ int agora_rtc_send_rtm_data(const char *rtm_uid, const void *msg, size_t msg_len, uint32_t msg_id, const char *custom_type);
 
 #ifdef __cplusplus
 }

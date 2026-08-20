@@ -1,62 +1,84 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 29th, 2020
- * Module:	OS errno implementation file
+/***************************************************************************
+ * Module:	aosl errno implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2020 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #include <api/aosl_types.h>
 #include <api/aosl_defs.h>
 #include <api/aosl_errno.h>
 #include <api/aosl_mm.h>
+#include <api/aosl_list.h>
 #include <kernel/thread.h>
 #include <stdlib.h>
 
 static k_tls_key_t errno_key = -1;
+static AOSL_DEFINE_LIST_HEAD(s_err_list);
+
+struct err_mm_node {
+	struct aosl_list_head node;
+	int *errno_ptr;
+};
 
 void k_errno_init (void)
 {
+	aosl_list_head_init(&s_err_list);
+
 	if (k_tls_key_create (&errno_key) < 0)
 		abort ();
 }
 
 void k_errno_fini (void)
 {
+	if (errno_key < 0) {
+		return;
+	}
 	k_tls_key_delete (errno_key);
 	errno_key = -1;
+
+	struct err_mm_node *err_node = NULL;
+	while ((err_node = aosl_list_remove_head_entry(&s_err_list, struct err_mm_node, node)) != NULL) {
+		aosl_free (err_node->errno_ptr);
+		aosl_free (err_node);
+	}
 }
 
 __export_in_so__ int *aosl_errno_ptr (void)
 {
-	void **errno_ptr;
+	int *errno_ptr;
 
 	if (errno_key < 0)
 		abort ();
 
-	errno_ptr = k_tls_key_get_ref (errno_key);
+	errno_ptr = k_tls_key_get (errno_key);
 	if (errno_ptr == NULL) {
-		if (k_tls_key_set (errno_key, NULL) < 0)
-			abort ();
-
-		errno_ptr = k_tls_key_get_ref (errno_key);
-		if (NULL == errno_ptr) {
+		struct err_mm_node *err_node = aosl_malloc (sizeof(struct err_mm_node));
+		if (err_node == NULL) {
 			abort ();
 		}
+		errno_ptr = (int *)aosl_malloc (sizeof (int));
+		if (errno_ptr == NULL)
+			abort ();
+
+		err_node->errno_ptr = errno_ptr;
+		aosl_list_add(&err_node->node, &s_err_list);
+
+		if (k_tls_key_set (errno_key, errno_ptr) < 0)
+			abort ();
+
 		*errno_ptr = 0;
 	}
 
-	return (int *)errno_ptr;
+	return errno_ptr;
 }
 
 __export_in_so__ char *aosl_strerror (int errnum)
 {
 	switch (errnum) {
-		/* 错误码定义 */
+		/* Error code definition */
 		case AOSL_EPERM: return "EPERM";
 		case AOSL_ENOENT: return "ENOENT";
 		case AOSL_ESRCH: return "ESRCH";
@@ -92,7 +114,7 @@ __export_in_so__ char *aosl_strerror (int errnum)
 		case AOSL_EDOM: return "EDOM";
 		case AOSL_ERANGE: return "ERANGE";
 
-		/* 更多错误码... */
+		/* More error code ... */
 		case AOSL_EDEADLK: return "EDEADLK";
 		case AOSL_ENAMETOOLONG: return "ENAMETOOLONG";
 		case AOSL_ENOLCK: return "ENOLCK";
@@ -100,7 +122,7 @@ __export_in_so__ char *aosl_strerror (int errnum)
 		case AOSL_ENOTEMPTY: return "ENOTEMPTY";
 		case AOSL_ELOOP: return "ELOOP";
 
-		/* 网络相关错误 */
+		/* Network related errors */
 		//case AOSL_EWOULDBLOCK: return "EWOULDBLOCK";
 		case AOSL_ENOMSG: return "ENOMSG";
 		case AOSL_EIDRM: return "EIDRM";
@@ -111,7 +133,7 @@ __export_in_so__ char *aosl_strerror (int errnum)
 		case AOSL_ELNRNG: return "ELNRNG";
 		case AOSL_EUNATCH: return "EUNATCH";
 
-/* 套接字错误 */
+		/* Socket errors */
 		case AOSL_ENONET: return "ENONET";
 		case AOSL_ENOPKG: return "ENOPKG";
 		case AOSL_EREMOTE: return "EREMOTE";

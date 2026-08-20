@@ -1,13 +1,11 @@
-/*************************************************************
- * Author:	zhangguanxian@agora.io
- * Date	 :	2025/12/16
+/***************************************************************************
  * Module:	atomic hal definitions.
  *
- * This is a part of the Agora RTC Service SDK.
- * Copyright (C) 2025 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #ifndef __AOSL_HAL_ATOMIC_H__
 #define __AOSL_HAL_ATOMIC_H__
 
@@ -91,15 +89,15 @@ intptr_t aosl_hal_atomic_xchg(intptr_t *v, intptr_t new);
 /**
  * @brief Memory barrier
  */
-void aosl_hal_mb();
+void aosl_hal_mb(void);
 /**
  * @brief Read memory barrier
  */
-void aosl_hal_rmb();
+void aosl_hal_rmb(void);
 /**
  * @brief Write memory barrier
  */
-void aosl_hal_wmb();
+void aosl_hal_wmb(void);
 
 #ifdef __cplusplus
 }

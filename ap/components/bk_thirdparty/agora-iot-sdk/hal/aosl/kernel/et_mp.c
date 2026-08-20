@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 15th, 2018
+/***************************************************************************
  * Module:	OS dependent relative functionals implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #include <hal/aosl_hal_iomp.h>
 #if defined(AOSL_HAL_HAVE_EPOLL) && AOSL_HAL_HAVE_EPOLL == 1
 
@@ -29,8 +26,7 @@ int os_mp_init_epoll (struct mp_queue *q)
 	q->efd = aosl_hal_epoll_create();
 	if (aosl_fd_invalid (q->efd)) {
 		q->efd = AOSL_INVALID_FD;
-		aosl_hal_set_error(q->efd);
-		return -aosl_errno;
+		return aosl_hal_set_error(AOSL_HAL_RET_EHAL);
 	}
 
 	return 0;
@@ -49,8 +45,7 @@ int os_activate_sigp_epoll (struct mp_queue *q)
 	event.fd = q->sigp.piper;
 	int err = aosl_hal_epoll_ctl (q->efd, AOSL_POLL_CTL_ADD, q->sigp.piper, &event);
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 	return 0;
 }
@@ -59,8 +54,7 @@ int os_deactivate_sigp_epoll (struct mp_queue *q)
 {
 	int err = aosl_hal_epoll_ctl (q->efd, AOSL_POLL_CTL_DEL, q->sigp.piper, NULL);
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 	return 0;
 }
@@ -81,8 +75,7 @@ int os_add_event_fd_epoll (struct mp_queue *q, struct iofd *f)
 
 	err = aosl_hal_epoll_ctl (q->efd, AOSL_POLL_CTL_ADD, event.fd, &event);
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 
 	return err;
@@ -92,8 +85,7 @@ int os_del_event_fd_epoll (struct mp_queue *q, struct iofd *f)
 {
 	int err = aosl_hal_epoll_ctl (q->efd, AOSL_POLL_CTL_DEL, iofd_fobj (f)->fd, NULL);
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 
 	return err;
@@ -143,7 +135,6 @@ void os_mp_dispatch_epoll (struct mp_queue *q, aosl_poll_event_t *events, int ev
 			 * a prior io fd. We should try our best to avoid these kinds of senario,
 			 * but some program may do as this according to some special logic.
 			 * So, just ignore these outdated events read by the prior syscall.
-			 * -- Lionfore Hao Nov 9th, 2018
 			 **/
 			continue;
 		}

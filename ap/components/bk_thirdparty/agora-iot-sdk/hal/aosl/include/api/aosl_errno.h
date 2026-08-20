@@ -1,14 +1,11 @@
-/*************************************************************
- * Author		:		Lionfore Hao (haolianfu@agora.io)
- * Date			:		Jul 30th, 2020
+/***************************************************************************
  * Module		:		AOSL errno definition header file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2020 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #ifndef __AOSL_ERRNO_H__
 #define __AOSL_ERRNO_H__
@@ -17,7 +14,7 @@
 
 #define AOSL_EBASE        1000
 
-/* 错误码定义 */
+/* Error code definition */
 #define AOSL_EPERM        (AOSL_EBASE + 1)  /* Operation not permitted */
 #define AOSL_ENOENT       (AOSL_EBASE + 2)  /* No such file or directory */
 #define AOSL_ESRCH        (AOSL_EBASE + 3)  /* No such process */
@@ -53,7 +50,7 @@
 #define AOSL_EDOM        (AOSL_EBASE + 33)  /* Math argument out of domain of func */
 #define AOSL_ERANGE      (AOSL_EBASE + 34)  /* Math result not representable */
 
-/* 更多错误码... */
+/* More error code ... */
 #define AOSL_EDEADLK      (AOSL_EBASE + 35)  /* Resource deadlock would occur */
 #define AOSL_ENAMETOOLONG (AOSL_EBASE + 36) /* File name too long */
 #define AOSL_ENOLCK      (AOSL_EBASE + 37)  /* No record locks available */
@@ -61,7 +58,7 @@
 #define AOSL_ENOTEMPTY   (AOSL_EBASE + 39)  /* Directory not empty */
 #define AOSL_ELOOP       (AOSL_EBASE + 40)  /* Too many symbolic links encountered */
 
-/* 网络相关错误 */
+/* Network related errors */
 #define AOSL_EWOULDBLOCK (AOSL_EBASE + AOSL_EAGAIN)  /* Operation would block */
 #define AOSL_ENOMSG      (AOSL_EBASE + 42)  /* No message of desired type */
 #define AOSL_EIDRM       (AOSL_EBASE + 43)  /* Identifier removed */
@@ -72,7 +69,7 @@
 #define AOSL_ELNRNG      (AOSL_EBASE + 48)  /* Link number out of range */
 #define AOSL_EUNATCH     (AOSL_EBASE + 49)  /* Protocol driver not attached */
 
-/* 套接字错误 */
+/* Socket errors */
 #define AOSL_ENONET      (AOSL_EBASE + 64)  /* Machine is not on the network */
 #define AOSL_ENOPKG      (AOSL_EBASE + 65)  /* Package not installed */
 #define AOSL_EREMOTE     (AOSL_EBASE + 66)  /* Object is remote */
@@ -132,9 +129,23 @@
 #define AOSL_EISNAM      (AOSL_EBASE + 120) /* Is a named type file */
 #define AOSL_EREMOTEIO   (AOSL_EBASE + 121) /* Remote I/O error */
 
+/* HAL common error */
+#define AOSL_EHAL        (AOSL_EBASE + 1000) /* HAL common error */
+
+/**
+ * @brief Get the pointer to the thread-local AOSL errno variable.
+ * @return  pointer to the current thread's errno value
+ **/
 extern __aosl_api__ int *aosl_errno_ptr (void);
+
+/**
+ * @brief Get the human-readable error description string for an AOSL error code.
+ * @param [in] errnum  the AOSL error number
+ * @return             pointer to a static string describing the error
+ **/
 extern __aosl_api__ char *aosl_strerror (int errnum);
 
+/** @brief The thread-local AOSL errno variable. */
 #define aosl_errno (*aosl_errno_ptr ())
 
 #endif /* __AOSL_ERRNO_H__ */

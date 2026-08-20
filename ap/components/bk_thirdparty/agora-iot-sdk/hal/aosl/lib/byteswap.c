@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 31st, 2020
- * Module:	bswap implementation file for those OS not having
+/***************************************************************************
+ * Module:	bswap implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2020 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #include <api/aosl_types.h>
 #include <api/aosl_defs.h>

@@ -1,13 +1,17 @@
+/***************************************************************************
+ * Module:	swab header file
+ *
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #ifndef _UAPI_KERNEL_SWAB_H
 #define _UAPI_KERNEL_SWAB_H
 
 #include <kernel/types.h>
 #include <kernel/compiler.h>
 
-/*
- * casts are necessary for constants, because we never know how for sure
- * how U/UL/ULL map to uint16_t, uint32_t, uint64_t. At least not in a portable way.
- */
 #define aosl___constant_swab16(x) ((uint16_t)(				\
 	(((uint16_t)(x) & (uint16_t)0x00ffU) << 8) |			\
 	(((uint16_t)(x) & (uint16_t)0xff00U) >> 8)))
@@ -28,12 +32,6 @@
 	(((uint64_t)(x) & (uint64_t)0x00ff000000000000ULL) >> 40) |	\
 	(((uint64_t)(x) & (uint64_t)0xff00000000000000ULL) >> 56)))
 
-/*
- * Implement the following as inlines, but define the interface using
- * macros to allow constant folding when possible:
- * ___swab16, ___swab32, ___swab64
- */
-
 static inline uint16_t aosl__fswab16(uint16_t val)
 {
 	return aosl___constant_swab16(val);
@@ -50,80 +48,43 @@ static inline uint64_t aosl__fswab64(uint64_t val)
 	return aosl___constant_swab64(val);
 }
 
-/**
- * aosl__swab16 - return a byteswapped 16-bit value
- * @x: value to byteswap
- */
-
 #define aosl__swab16(x)	aosl__fswab16(x)
 
-/**
- * aosl__swab32 - return a byteswapped 32-bit value
- * @x: value to byteswap
- */
 #define aosl__swab32(x)	aosl__fswab32(x)
 
-/**
- * aosl__swab64 - return a byteswapped 64-bit value
- * @x: value to byteswap
- */
 #define aosl__swab64(x)	aosl__fswab64(x)
 
-/**
- * aosl__swab16p - return a byteswapped 16-bit value from a pointer
- * @p: pointer to a naturally-aligned 16-bit value
- */
 static inline uint16_t aosl__swab16p(const uint16_t *p)
 {
 	return aosl__swab16(*p);
 }
 
-/**
- * aosl__swab32p - return a byteswapped 32-bit value from a pointer
- * @p: pointer to a naturally-aligned 32-bit value
- */
 static inline uint32_t aosl__swab32p(const uint32_t *p)
 {
 	return aosl__swab32(*p);
 }
 
-/**
- * aosl__swab64p - return a byteswapped 64-bit value from a pointer
- * @p: pointer to a naturally-aligned 64-bit value
- */
 static inline uint64_t aosl__swab64p(const uint64_t *p)
 {
 	return aosl__swab64(*p);
 }
 
-/**
- * aosl__swab16s - byteswap a 16-bit value in-place
- * @p: pointer to a naturally-aligned 16-bit value
- */
 static inline void aosl__swab16s(uint16_t *p)
 {
 	*p = aosl__swab16p(p);
 }
-/**
- * aosl__swab32s - byteswap a 32-bit value in-place
- * @p: pointer to a naturally-aligned 32-bit value
- */
+
 static inline void aosl__swab32s(uint32_t *p)
 {
 	*p = aosl__swab32p(p);
 }
 
-/**
- * aosl__swab64s - byteswap a 64-bit value in-place
- * @p: pointer to a naturally-aligned 64-bit value
- */
 static inline void aosl__swab64s(uint64_t *p)
 {
 	*p = aosl__swab64p(p);
 }
 
 
-/* Lionfore: from $/include/kernel/swab.h */
 #define aosl_swab16 aosl__swab16
 #define aosl_swab32 aosl__swab32
 #define aosl_swab64 aosl__swab64

@@ -1,3 +1,11 @@
+/***************************************************************************
+ * Module:	Multiplex queue header file
+ *
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #ifndef __MP_QUEUE_H__
 #define __MP_QUEUE_H__
 
@@ -49,12 +57,12 @@ struct refobj_stack_node {
 struct resume_calls {
 	atomic_t usage;
 	uint32_t task_count;
-	struct list_head list;
+	struct aosl_list_head list;
 };
 
 struct mpq_stack {
 	aosl_stack_id_t id;
-	struct list_head *prepare_calls;
+	struct aosl_list_head *prepare_calls;
 	aosl_stack_id_t err_stack_id;
 	int task_exec_err;
 	struct resume_calls *resume_calls;
@@ -73,18 +81,16 @@ static __inline__ void mpq_stack_init (struct mpq_stack *stk, aosl_stack_id_t st
 	stk->task_exec_count = 0;
 }
 
-extern void resume_calls_put (struct resume_calls *resume_calls, const aosl_ts_t *queued_ts_p);
-extern void free_prepare_calls (struct list_head *prepare_calls, const aosl_ts_t *queued_ts_p);
-
 static __inline__ void mpq_stack_fini (struct mpq_stack *stk)
 {
-	struct list_head *prepare_calls = stk->prepare_calls;
+	struct aosl_list_head *prepare_calls = stk->prepare_calls;
+	(void)prepare_calls;
 	stk->prepare_calls = NULL;
-	free_prepare_calls (prepare_calls, NULL);
+	//free_prepare_calls (prepare_calls, NULL);
 	stk->err_stack_id = AOSL_STACK_INVALID;
 	stk->task_exec_err = 0;
 	if (stk->resume_calls != NULL) {
-		resume_calls_put (stk->resume_calls, NULL);
+		//resume_calls_put (stk->resume_calls, NULL);
 		stk->resume_calls = NULL;
 	}
 	stk->prepare_calls_count = 0;
@@ -101,8 +107,8 @@ typedef enum wakeup_type {
 
 struct wakeup_signal {
 	wakeup_type_e type;
-	int piper;           // pipe or socket for read
-	int pipew;           // pipe or socket for write
+	aosl_fd_t piper;     // pipe or socket for read
+	aosl_fd_t pipew;     // pipe or socket for write
 	int activated;       // whether actived
 	aosl_event_t  event; // event for signal
 };
@@ -128,7 +134,6 @@ struct mp_queue {
 	 * Putting this member here is really ugly, but it
 	 * is the simplest way, so just keep it here for
 	 * now.
-	 * -- Lionfore Hao Aug 19th, 2018
 	 **/
 	void *ipv6_prefix_96;
 
@@ -161,10 +166,10 @@ struct mp_queue {
 	aosl_ts_t last_load_us;
 	aosl_ts_t last_idle_us;
 
-	struct list_head iofds;
+	struct aosl_list_head iofds;
 	size_t iofd_count;
 
-	struct list_head timers;
+	struct aosl_list_head timers;
 	size_t timer_count;
 	struct timer_base timer_base;
 
@@ -172,12 +177,12 @@ struct mp_queue {
 	struct q_wait_entry *destroy_wait_tail;
 };
 
-static __always_inline void ____q_get (struct mp_queue *q)
+static inline void ____q_get (struct mp_queue *q)
 {
 	atomic_inc (&q->usage);
 }
 
-static __always_inline void ____q_put (struct mp_queue *q)
+static inline void ____q_put (struct mp_queue *q)
 {
 	atomic_dec (&q->usage);
 }
@@ -190,8 +195,7 @@ extern struct mp_queue *__mpq_get (aosl_mpq_t mpq_id);
 extern void __mpq_put (struct mp_queue *q);
 extern struct mp_queue *__mpq_get_or_this (aosl_mpq_t mpq_obj_id);
 extern void __mpq_put_or_this (struct mp_queue *q);
-extern struct mp_queue *__get_or_create_current ();
-extern int __is_mpq_valid (aosl_mpq_t mpq_obj_id);
+extern struct mp_queue *__get_or_create_current (void);
 
 extern int __mpq_queue (struct mp_queue *q, aosl_mpq_t done_qid, aosl_ref_t ref, const char *f_name, aosl_mpq_func_argv_t f, uintptr_t argc, ...);
 extern int __mpq_queue_args (struct mp_queue *q, aosl_mpq_t done_qid, aosl_ref_t ref, const char *f_name, aosl_mpq_func_argv_t f, uintptr_t argc, va_list args);
@@ -220,7 +224,7 @@ extern void __mpq_destroy (struct mp_queue *q);
 
 extern void os_drain_sigp (struct mp_queue *q);
 
-extern struct mp_queue *__get_this_mpq ();
+extern struct mp_queue *__get_this_mpq (void);
 #define THIS_MPQ() __get_this_mpq ()
 
 static __inline__ aosl_mpq_t this_mpq_id (void)

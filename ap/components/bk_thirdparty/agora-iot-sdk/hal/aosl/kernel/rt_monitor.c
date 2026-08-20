@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 26th, 2018
+/***************************************************************************
  * Module:	Route info monitor for linux implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #if defined(__linux__)
 #include <stdio.h>
 #include <stdlib.h>
@@ -31,7 +28,7 @@
 #include <kernel/rt_monitor.h>
 #include <kernel/kernel.h>
 #include <kernel/err.h>
-#include <kernel/net.h>
+#include <kernel/netifs.h>
 
 
 static int af_netlink_fd = -1;
@@ -108,7 +105,7 @@ static int update_ifinfos (struct nlmsghdr *h)
 static int afnetlink_init_netifs ()
 {
 	int sk;
-	ssize_t err;
+	isize_t err;
 	char req [sizeof (struct nlmsghdr) + sizeof (struct rtmsg)];
 	struct nlmsghdr *nlh = (struct nlmsghdr *)req;
 	struct ifinfomsg *ifm = (struct ifinfomsg *)(nlh + 1);
@@ -210,7 +207,7 @@ static int __get_if_wireless(const char *if_name)
 static int __af_get_default_rt (uint16_t af, aosl_rt_t *rt, uint32_t *tb_id_p)
 {
 	int sk;
-	ssize_t err;
+	isize_t err;
 	int def_rt_exist = 0;
 	int def_rt_cnt = 0;
 	char req [sizeof (struct nlmsghdr) + sizeof (struct rtmsg)];
@@ -222,7 +219,6 @@ static int __af_get_default_rt (uint16_t af, aosl_rt_t *rt, uint32_t *tb_id_p)
 	 * because the rta_oif/rta_gw etc pointers whick pointing to it
 	 * and will be used outside the for loop, although this operation
 	 * makes no trouble, but we use a memory outside its' scope.
-	 * -- Lionfore Hao Jun 24th, 2019
 	 **/
 	char buf [16384];
 	struct rtattr *rta_priority = NULL;
@@ -231,7 +227,7 @@ static int __af_get_default_rt (uint16_t af, aosl_rt_t *rt, uint32_t *tb_id_p)
 	uint32_t min_metric = 0xffffffffu; /* set to the max unsigned integer value */
 	uint32_t seq = __nlmsg_seq++;
 
-	__invalidate_rt (rt);
+	aosl_invalidate_rt (rt);
 
 	sk = __socket_nl_rt ();
 	if (sk < 0)
@@ -302,12 +298,11 @@ static int __af_get_default_rt (uint16_t af, aosl_rt_t *rt, uint32_t *tb_id_p)
 				 * very important, otherwise we would get unexpected result for
 				 * the multiple route table cases, because some route table may
 				 * have rtm_dst_len is zero, but have no RTA_GATEWAY attribute.
-				 * -- Lionfore Hao Mar 2nd, 2019
+				 *
 				 * The Xinke system of Zhiyang has a very strange behavior that
 				 * the default route has no GW attribute, so we should consider
 				 * these cases, if the default route having no GW attribute, we
 				 * would clear the GW with zeros.
-				 * -- Lionfore Hao Jan 2nd, 2020
 				 **/
 				if (rtas [RTA_OIF] == NULL /*|| rtas [RTA_GATEWAY] == NULL*/)
 					continue;
@@ -336,7 +331,6 @@ static int __af_get_default_rt (uint16_t af, aosl_rt_t *rt, uint32_t *tb_id_p)
 				 *	   at most 2 different default routes with global scope in xnu.
 				 *
 				 * So, we only care the default route with minimal metric value for linux kernel.
-				 * -- Lionfore Hao Jul 29th, 2018
 				 **/
 				rta_priority = rtas [RTA_PRIORITY];
 				if (rta_priority != NULL) {
@@ -394,7 +388,6 @@ __done:
 			 * the default route has no GW attribute, so we should consider
 			 * these cases, if the default route having no GW attribute, we
 			 * would clear the GW with zeros.
-			 * -- Lionfore Hao Jan 2nd, 2020
 			 **/
 			memset (&rt->gw, 0, sizeof rt->gw);
 		}
@@ -410,7 +403,7 @@ __done:
 		// ignore fe80:: scope link route
 		if (rt->gw.sa.sa_family == AF_INET6) {
 			if (rt->gw.in6.sin6_addr.s6_addr_v[0] == 0xfe && rt->gw.in6.sin6_addr.s6_addr_v[1] == 0x80) {
-				__invalidate_rt (rt);
+					aosl_invalidate_rt (rt);
 				goto __close_sk;
 			}
 		}
@@ -443,6 +436,8 @@ int os_get_def_rt (aosl_def_rt_t *def_rt)
 
 	return got_v4 + got_v6;
 }
+
+extern void check_report_def_rt_change_event (aosl_net_ev_func_t f, void *arg);
 
 static void __process_rtmsg (void *buf, size_t len, aosl_net_ev_func_t f, void *arg)
 {
@@ -500,12 +495,12 @@ static int __create_and_attach_af_netlink (aosl_net_ev_func_t f, void *arg)
 		return 0;
 	}
 
-__out:
+__tag_out:
 	return -1;
 
 __close_sk:
 	close (sk);
-	goto __out;
+	goto __tag_out;
 }
 
 static void __on_af_netlink_event (int fd, int event, uintptr_t argc, uintptr_t argv [])

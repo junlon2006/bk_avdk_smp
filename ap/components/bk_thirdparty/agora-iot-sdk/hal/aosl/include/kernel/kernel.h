@@ -1,3 +1,11 @@
+/***************************************************************************
+ * Module:	kernel
+ *
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #ifndef __AOSL_KERNEL_H__
 #define __AOSL_KERNEL_H__
 

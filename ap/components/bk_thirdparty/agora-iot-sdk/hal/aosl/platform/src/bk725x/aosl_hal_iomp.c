@@ -5,6 +5,7 @@
 
 #include <hal/aosl_hal_errno.h>
 #include <hal/aosl_hal_iomp.h>
+#include <api/aosl_log.h>
 
 fd_set_t aosl_hal_fdset_create()
 {
@@ -24,17 +25,17 @@ void aosl_hal_fdset_zero(fd_set_t fdset)
   FD_ZERO((fd_set *)fdset);
 }
 
-void aosl_hal_fdset_set(fd_set_t fdset, int fd)
+void aosl_hal_fdset_set(fd_set_t fdset, aosl_fd_t fd)
 {
   FD_SET(fd, (fd_set *)fdset);
 }
 
-void aosl_hal_fdset_clr(fd_set_t fdset, int fd)
+void aosl_hal_fdset_clr(fd_set_t fdset, aosl_fd_t fd)
 {
   FD_CLR(fd, (fd_set *)fdset);
 }
 
-int aosl_hal_fdset_isset(fd_set_t fdset, int fd)
+int aosl_hal_fdset_isset(fd_set_t fdset, aosl_fd_t fd)
 {
   return FD_ISSET(fd, (fd_set *)fdset);
 }
@@ -53,7 +54,11 @@ int aosl_hal_select(int nfds, fd_set_t readfds, fd_set_t writefds, fd_set_t exce
 
   err = select(nfds, (fd_set *)readfds, (fd_set *)writefds, (fd_set *)exceptfds, ptv);
   if (err < 0) {
-    err = aosl_hal_errno_convert(errno);
+    int orig_errno = errno;
+    err = aosl_hal_errno_convert(orig_errno);
+    if (err == AOSL_HAL_RET_EHAL) {
+      AOSL_LOG_ERR("select errno convert: %d -> %d", orig_errno, err);
+    }
     return err;
   }
 

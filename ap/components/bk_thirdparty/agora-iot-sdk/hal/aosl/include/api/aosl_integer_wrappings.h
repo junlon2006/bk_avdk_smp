@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 21st, 2018
+/***************************************************************************
  * Module:	AOSL integer wrapping processing definitions.
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #ifndef __AOSL_INTEGER_WRAPPINGS_H__
 #define __AOSL_INTEGER_WRAPPINGS_H__
@@ -129,7 +126,7 @@ static __inline__ uint64_t aosl_uint64_dist (uint64_t a, uint64_t b)
 }
 
 
-#if defined (__LP64__) || defined (_WIN64)
+#if INTPTR_MAX == INT64_MAX
 #define aosl_uintptr_add(a, b) aosl_uint64_add (a, b)
 #define aosl_uintptr_sub(a, b) aosl_uint64_sub (a, b)
 #define aosl_uintptr_after(a, b) aosl_uint64_after (a, b)

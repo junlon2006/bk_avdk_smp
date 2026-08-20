@@ -6,7 +6,7 @@
 #include <api/aosl_route.h>
 #include <api/aosl_log.h>
 
-static inline int conv_domain_to_os(enum aosl_socket_domain domain)
+static int conv_domain_to_os(enum aosl_socket_domain domain)
 {
   switch (domain) {
     case AOSL_AF_UNSPEC:
@@ -20,7 +20,7 @@ static inline int conv_domain_to_os(enum aosl_socket_domain domain)
   }
 }
 
-static inline int conv_type_to_os(enum aosl_socket_type type)
+static int conv_type_to_os(enum aosl_socket_type type)
 {
   switch (type) {
     case AOSL_SOCK_STREAM:
@@ -32,19 +32,21 @@ static inline int conv_type_to_os(enum aosl_socket_type type)
   }
 }
 
-static inline int conv_proto_to_os(enum aosl_socket_proto proto)
+static int conv_proto_to_os(enum aosl_socket_proto proto)
 {
-  switch (proto) {
-    case AOSL_IPPROTO_TCP:
-      return IPPROTO_TCP;
-    case AOSL_IPPROTO_UDP:
-      return IPPROTO_UDP;
-    default:
-      return -1;
-  }
+	switch (proto) {
+	case AOSL_IPPROTO_TCP:
+		return IPPROTO_TCP;
+	case AOSL_IPPROTO_UDP:
+		return IPPROTO_UDP;
+	case AOSL_IPPROTO_AUTO:
+		return 0;
+	default:
+		return 0;
+	}
 }
 
-static inline void conv_addr_to_os(const aosl_sockaddr_t *ah_addr, struct sockaddr *os_addr)
+static void conv_addr_to_os(const aosl_sockaddr_t *ah_addr, struct sockaddr *os_addr)
 {
   switch (ah_addr->sa_family) {
     case AOSL_AF_INET: {
@@ -70,8 +72,12 @@ static inline void conv_addr_to_os(const aosl_sockaddr_t *ah_addr, struct sockad
   }
 }
 
-static inline void conv_addr_to_aosl(const struct sockaddr *os_addr, aosl_sockaddr_t *ah_addr)
+static void conv_addr_to_aosl(const struct sockaddr *os_addr, aosl_sockaddr_t *ah_addr)
 {
+  if (NULL == os_addr || NULL == ah_addr) {
+    return;
+  }
+
   switch (os_addr->sa_family) {
     case AF_INET: {
       const struct sockaddr_in *v4 = (const struct sockaddr_in *)os_addr;
@@ -96,7 +102,7 @@ static inline void conv_addr_to_aosl(const struct sockaddr *os_addr, aosl_sockad
   }
 }
 
-static inline int get_addrlen(int af)
+static int get_addrlen(int af)
 {
   switch (af) {
     case AF_INET:
@@ -110,15 +116,19 @@ static inline int get_addrlen(int af)
   }
 }
 
-int aosl_hal_sk_socket(enum aosl_socket_domain domain,
-                       enum aosl_socket_type type,
-                       enum aosl_socket_proto protocol)
+aosl_fd_t aosl_hal_sk_socket(enum aosl_socket_domain domain,
+											 enum aosl_socket_type type,
+											 enum aosl_socket_proto protocol)
 {
-  int n_domain = conv_domain_to_os(domain);
-  int n_type = conv_type_to_os(type);
-  int n_proto = conv_proto_to_os(protocol);
+	int n_domain = conv_domain_to_os(domain);
+	int n_type = conv_type_to_os(type);
+	int n_proto = conv_proto_to_os(protocol);
 
-  return socket(n_domain, n_type, n_proto);
+  int fd = socket(n_domain, n_type, n_proto);
+  if (fd < 0) {
+    return AOSL_INVALID_FD;
+  }
+  return (aosl_fd_t)fd;
 }
 
 int aosl_hal_sk_bind(int sockfd, const aosl_sockaddr_t* addr)
@@ -129,25 +139,58 @@ int aosl_hal_sk_bind(int sockfd, const aosl_sockaddr_t* addr)
   struct sockaddr_in com_addr = {0};
 #endif
   struct sockaddr *n_addr = (struct sockaddr *)&com_addr;
+  int af = conv_domain_to_os(addr->sa_family);
+  socklen_t addrlen = get_addrlen(af);
   conv_addr_to_os(addr, n_addr);
-  socklen_t addrlen = get_addrlen(n_addr->sa_family);
   int ret = bind(sockfd, n_addr, addrlen);
   if (ret < 0) {
-    return aosl_hal_errno_convert(errno);
+    int orig_errno = errno;
+    ret = aosl_hal_errno_convert(orig_errno);
+    AOSL_LOG_ERR("bind errno convert: %d -> %d", orig_errno, ret);
+    return ret;
   }
   return 0;
+}
+
+
+int aosl_hal_sk_bind_device(int sockfd, const char *if_name)
+{
+	struct ifreq ifr;
+	memset(&ifr, 0, sizeof(ifr));
+	strncpy(ifr.ifr_name, if_name, sizeof(ifr.ifr_name) - 1);
+	int ret = lwip_setsockopt(sockfd, SOL_SOCKET, SO_BINDTODEVICE, (void *)&ifr, sizeof(ifr));
+	if (ret < 0) {
+		int orig_errno = errno;
+		ret = aosl_hal_errno_convert(orig_errno);
+		AOSL_LOG_ERR("setsockopt(SO_BINDTODEVICE) errno convert: %d -> %d", orig_errno, ret);
+		return ret;
+	}
+	return 0;
+}
+
+int aosl_hal_sk_set_dscp(aosl_fd_t sockfd, enum aosl_socket_domain domain, uint8_t dscp)
+{
+	(void)sockfd;
+	(void)domain;
+	(void)dscp;
+	return 0;
 }
 
 int aosl_hal_sk_listen(int sockfd, int backlog)
 {
   int ret = listen(sockfd, backlog);
   if (ret < 0) {
-    return aosl_hal_errno_convert(errno);
+    int orig_errno = errno;
+    ret = aosl_hal_errno_convert(orig_errno);
+    if (ret == AOSL_HAL_RET_EHAL) {
+      AOSL_LOG_ERR("listen errno convert: %d -> %d", orig_errno, ret);
+    }
+    return ret;
   }
   return 0;
 }
 
-int aosl_hal_sk_accept(int sockfd, aosl_sockaddr_t *addr)
+aosl_fd_t aosl_hal_sk_accept(aosl_fd_t sockfd, aosl_sockaddr_t *addr)
 {
 #if LWIP_IPV6
   struct sockaddr_in6 com_addr = {0};
@@ -158,11 +201,16 @@ int aosl_hal_sk_accept(int sockfd, aosl_sockaddr_t *addr)
   socklen_t addrlen = sizeof(com_addr);
   int ret = accept(sockfd, n_addr, &addrlen);
   if (ret < 0) {
-    ret = aosl_hal_errno_convert(errno);
-  } else {
-    conv_addr_to_aosl(n_addr, addr);
-  }
-  return ret;
+		int orig_errno = errno;
+		int hal_err = aosl_hal_errno_convert(orig_errno);
+		if (hal_err == AOSL_HAL_RET_EHAL) {
+			AOSL_LOG_ERR("accept errno convert: %d -> %d", orig_errno, hal_err);
+		}
+		return AOSL_INVALID_FD;
+	} else {
+		conv_addr_to_aosl(n_addr, addr);
+	}
+	return (aosl_fd_t)ret;
 }
 
 int aosl_hal_sk_connect(int sockfd, const aosl_sockaddr_t *addr)
@@ -173,11 +221,17 @@ int aosl_hal_sk_connect(int sockfd, const aosl_sockaddr_t *addr)
   struct sockaddr_in com_addr = {0};
 #endif
   struct sockaddr *n_addr = (struct sockaddr *)&com_addr;
+  int af = conv_domain_to_os(addr->sa_family);
+  socklen_t addrlen = get_addrlen(af);
   conv_addr_to_os(addr, n_addr);
-  socklen_t addrlen = get_addrlen(n_addr->sa_family);
   int ret = connect(sockfd, n_addr, addrlen);
   if (ret < 0) {
-    return aosl_hal_errno_convert(errno);
+    int orig_errno = errno;
+    ret = aosl_hal_errno_convert(orig_errno);
+    if (ret == AOSL_HAL_RET_EHAL) {
+      AOSL_LOG_ERR("connect errno convert: %d -> %d", orig_errno, ret);
+    }
+    return ret;
   }
   return 0;
 }
@@ -187,25 +241,35 @@ int aosl_hal_sk_close(int sockfd)
   return close(sockfd);
 }
 
-ssize_t aosl_hal_sk_send(int sockfd, const void* buf, size_t len, int flags)
+isize_t aosl_hal_sk_send(int sockfd, const void* buf, size_t len, int flags)
 {
   int ret = send(sockfd, buf, len, flags);
   if (ret < 0) {
-    return aosl_hal_errno_convert(errno);
+    int orig_errno = errno;
+    ret = aosl_hal_errno_convert(orig_errno);
+    if (ret == AOSL_HAL_RET_EHAL) {
+      AOSL_LOG_ERR("send errno convert: %d -> %d", orig_errno, ret);
+    }
+    return ret;
   }
   return ret;
 }
 
-ssize_t aosl_hal_sk_recv(int sockfd, void* buf, size_t len, int flags)
+isize_t aosl_hal_sk_recv(int sockfd, void* buf, size_t len, int flags)
 {
   int ret = recv(sockfd, buf, len, flags);
   if (ret < 0) {
-    return aosl_hal_errno_convert(errno);
+    int orig_errno = errno;
+    ret = aosl_hal_errno_convert(orig_errno);
+    if (ret == AOSL_HAL_RET_EHAL) {
+      AOSL_LOG_ERR("recv errno convert: %d -> %d", orig_errno, ret);
+    }
+    return ret;
   }
   return ret;
 }
 
-ssize_t aosl_hal_sk_sendto(int sockfd, const void *buffer, size_t length,
+int aosl_hal_sk_sendto(int sockfd, const void *buffer, size_t length,
                         int flags, const aosl_sockaddr_t *dest_addr)
 {
 #if LWIP_IPV6
@@ -214,16 +278,22 @@ ssize_t aosl_hal_sk_sendto(int sockfd, const void *buffer, size_t length,
   struct sockaddr_in com_addr = {0};
 #endif
   struct sockaddr *n_dest_addr = (struct sockaddr *)&com_addr;
+  int af = conv_domain_to_os(dest_addr->sa_family);
+  socklen_t addrlen = get_addrlen(af);
   conv_addr_to_os(dest_addr, n_dest_addr);
-  socklen_t addrlen = get_addrlen(n_dest_addr->sa_family);
   int ret = sendto(sockfd, buffer, length, flags, n_dest_addr, addrlen);
   if (ret < 0) {
-    return aosl_hal_errno_convert(errno);
+    int orig_errno = errno;
+    ret = aosl_hal_errno_convert(orig_errno);
+    if (ret == AOSL_HAL_RET_EHAL) {
+      AOSL_LOG_ERR("sendto errno convert: %d -> %d", orig_errno, ret);
+    }
+    return ret;
   }
   return ret;
 }
 
-ssize_t aosl_hal_sk_recvfrom(int sockfd, void *buffer, size_t length,
+int aosl_hal_sk_recvfrom(int sockfd, void *buffer, size_t length,
                           int flags, aosl_sockaddr_t *src_addr)
 {
 #if LWIP_IPV6
@@ -235,27 +305,42 @@ ssize_t aosl_hal_sk_recvfrom(int sockfd, void *buffer, size_t length,
   socklen_t addrlen = sizeof(com_addr);
   int ret = recvfrom(sockfd, buffer, length, flags, n_src_addr, &addrlen);
   if (ret < 0) {
-    ret = aosl_hal_errno_convert(errno);
+    int orig_errno = errno;
+    ret = aosl_hal_errno_convert(orig_errno);
+    if (ret == AOSL_HAL_RET_EHAL) {
+      AOSL_LOG_ERR("recvfrom errno convert: %d -> %d", orig_errno, ret);
+    }
+    return ret;
   } else {
     conv_addr_to_aosl(n_src_addr, src_addr);
   }
   return ret;
 }
 
-ssize_t aosl_hal_sk_read(int sockfd, void *buf, size_t count)
+int aosl_hal_sk_read(int sockfd, void *buf, size_t count)
 {
   int ret = read(sockfd, buf, count);
   if (ret < 0) {
-    return aosl_hal_errno_convert(errno);
+    int orig_errno = errno;
+    ret = aosl_hal_errno_convert(orig_errno);
+    if (ret == AOSL_HAL_RET_EHAL) {
+      AOSL_LOG_ERR("read errno convert: %d -> %d", orig_errno, ret);
+    }
+    return ret;
   }
   return ret;
 }
 
-ssize_t aosl_hal_sk_write(int sockfd, const void *buf, size_t count)
+int aosl_hal_sk_write(int sockfd, const void *buf, size_t count)
 {
   int ret = write(sockfd, buf, count);
   if (ret < 0) {
-    return aosl_hal_errno_convert(errno);
+    int orig_errno = errno;
+    ret = aosl_hal_errno_convert(orig_errno);
+    if (ret == AOSL_HAL_RET_EHAL) {
+      AOSL_LOG_ERR("write errno convert: %d -> %d", orig_errno, ret);
+    }
+    return ret;
   }
   return ret;
 }

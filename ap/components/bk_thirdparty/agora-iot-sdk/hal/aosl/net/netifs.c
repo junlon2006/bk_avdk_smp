@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Aug 6th, 2018
+/***************************************************************************
  * Module:	Interface info cache for implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,14 +20,14 @@
 
 
 struct netif_node {
-	struct list_head node;
+	struct aosl_list_head node;
 
 	aosl_netif_t netif;
 };
 
 #define IFINFO_HASH_SIZE 16
-static struct list_head __netifs_hash [IFINFO_HASH_SIZE];
-static struct list_head __free_netifs = LIST_HEAD_INIT (__free_netifs);
+static struct aosl_list_head __netifs_hash [IFINFO_HASH_SIZE];
+static struct aosl_list_head __free_netifs = AOSL_LIST_HEAD_INIT (__free_netifs);
 
 
 static __inline__ struct netif_node *__netif_node_by_index (unsigned int idx)
@@ -39,7 +36,7 @@ static __inline__ struct netif_node *__netif_node_by_index (unsigned int idx)
 	struct netif_node *netif = NULL;
 
 	hash = idx & (IFINFO_HASH_SIZE - 1);
-	list_for_each_entry_t (struct netif_node, netif, &__netifs_hash [hash], node) {
+	aosl_list_for_each_entry_t (struct netif_node, netif, &__netifs_hash [hash], node) {
 		if (netif->netif.if_index == (int)idx)
 			return netif;
 	}
@@ -76,8 +73,8 @@ int update_netifs (int del, int ifindex, ...)
 
 	if (del) {
 		if (node != NULL) {
-			list_del (&node->node);
-			list_add_tail (&node->node, &__free_netifs);
+			aosl_list_del (&node->node);
+			aosl_list_add_tail (&node->node, &__free_netifs);
 			return 0;
 		}
 
@@ -102,7 +99,7 @@ int update_netifs (int del, int ifindex, ...)
 		return 0;
 	}
 
-	node = list_remove_head_entry (&__free_netifs, struct netif_node, node);
+	node = aosl_list_remove_head_entry (&__free_netifs, struct netif_node, node);
 	if (node == NULL) {
 		node = aosl_malloc (sizeof (struct netif_node));
 		if (node == NULL)
@@ -118,26 +115,26 @@ int update_netifs (int del, int ifindex, ...)
 	}
 
 	hash = ifindex & (IFINFO_HASH_SIZE - 1);
-	list_add_tail (&node->node, &__netifs_hash [hash]);
+	aosl_list_add_tail (&node->node, &__netifs_hash [hash]);
 	return 0;
 }
 
-void netifs_hash_init ()
+void netifs_hash_init (void)
 {
 	int i;
 	for (i = 0; i < IFINFO_HASH_SIZE; i++) {
-		INIT_LIST_HEAD (&__netifs_hash [i]);
+		aosl_list_head_init (&__netifs_hash [i]);
 	}
 }
 
-void netifs_hash_fini ()
+void netifs_hash_fini (void)
 {
 	int i;
 	struct netif_node *node;
 
 	for (i = 0; i < IFINFO_HASH_SIZE; i++) {
 		for (;;) {
-			node = list_remove_head_entry (&__netifs_hash [i], struct netif_node, node);
+			node = aosl_list_remove_head_entry (&__netifs_hash [i], struct netif_node, node);
 			if (node == NULL)
 				break;
 
@@ -146,7 +143,7 @@ void netifs_hash_fini ()
 	}
 
 	for (;;) {
-		node = list_remove_head_entry (&__free_netifs, struct netif_node, node);
+		node = aosl_list_remove_head_entry (&__free_netifs, struct netif_node, node);
 		if (node == NULL)
 			break;
 

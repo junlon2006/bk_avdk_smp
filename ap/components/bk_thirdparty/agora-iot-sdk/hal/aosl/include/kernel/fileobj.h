@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Aug 17th, 2020
- * Module:	Internal used net relative functionals header file
+/***************************************************************************
+ * Module:	file object
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2020 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #ifndef __KERNEL_FILE_H__
 #define __KERNEL_FILE_H__
@@ -23,6 +20,7 @@
 typedef void (*k_obj_dtor_t) (void *obj);
 
 struct file_obj {
+	struct aosl_rb_node rb_node;
 	aosl_fd_t fd;
 	atomic_t usage;
 	int mpq_fd;
@@ -32,6 +30,7 @@ struct file_obj {
 
 
 extern void fileobj_init (void);
+extern void fileobj_fini (void);
 
 extern int install_fd (aosl_fd_t fd, struct file_obj *f);
 extern int remove_fd (struct file_obj *f);

@@ -1,13 +1,11 @@
-/*************************************************************
- * Author:	zhangguanxian@agora.io
- * Date	 :	2025/12/16
+/***************************************************************************
  * Module:	time hal definitions.
  *
- * This is a part of the Agora RTC Service SDK.
- * Copyright (C) 2025 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #ifndef __AOSL_HAL_TIME_H__
 #define __AOSL_HAL_TIME_H__
 

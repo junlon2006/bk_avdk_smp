@@ -1,3 +1,11 @@
+/***************************************************************************
+ * Module:	error
+ *
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #ifndef __KERNEL_ERR_H__
 #define __KERNEL_ERR_H__
 
@@ -41,24 +49,30 @@ static inline intptr_t IS_ERR_OR_NULL(const void *ptr)
 
 #define aosl_set_error(err) do { aosl_errno = -(err); } while (0)
 
-#define aosl_hal_set_error(err) \
-do { \
-	if (err < 0) { \
-		int newerr = 0; \
-		switch (err) { \
-			case AOSL_HAL_RET_EINTR: \
-				newerr = AOSL_EINTR; \
-				break; \
-			case AOSL_HAL_RET_EAGAIN: \
-				newerr = AOSL_EAGAIN; \
-				break; \
-			default: \
-				newerr = 2000; \
-				break; \
-		} \
-		aosl_set_error(-newerr); \
-	} \
-} while (0)
+static __inline__ int aosl_hal_set_error(int err)
+{
+	if (err < 0) {
+		int newerr = 0;
+		switch (err) {
+			case AOSL_HAL_RET_EINTR:
+				newerr = AOSL_EINTR;
+				break;
+			case AOSL_HAL_RET_EAGAIN:
+				newerr = AOSL_EAGAIN;
+				break;
+			case AOSL_HAL_RET_EINPROGRESS:
+				newerr = AOSL_EINPROGRESS;
+				break;
+			default:
+				newerr = AOSL_EHAL;
+				break;
+		}
+		aosl_set_error(-newerr);
+		return -newerr;
+	}
+
+	return 0;
+}
 
 #define return_err(err) do { \
 		intptr_t ____$err = (intptr_t)(err); \

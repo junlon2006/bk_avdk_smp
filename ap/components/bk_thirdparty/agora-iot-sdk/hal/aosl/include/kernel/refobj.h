@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Dec 5th, 2018
+/***************************************************************************
  * Module:	AOSL reference object internal definition file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #ifndef __AOSL_REFOBJ_H__
 #define __AOSL_REFOBJ_H__
@@ -54,7 +51,6 @@ struct refobj {
 	 * we could not determine whether this task object has already been
 	 * destroyed if some pending async operations on the way when the
 	 * usage count is greater than 1.
-	 * -- Lionfore Hao Nov 26th, 2018
 	 **/
 #define REFOBJ_DESTROYED 0x80000000
 #define REFOBJ_MODIFY_ASYNC 0x40000000

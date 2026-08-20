@@ -1,15 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 15th, 2018
+/***************************************************************************
  * Module:	OS dependent relative functionals implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
-
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -125,7 +121,6 @@ int os_poll_dispatch (struct mp_queue *q, intptr_t timeo)
 	 * 1. not terminated
 	 * 2. some thread kicked us OR we have iofds OR waiting time != 0
 	 * Otherwise, no need to invoke the waiting function at all.
-	 * -- Lionfore Hao Sep 5th, 2019
 	 **/
 	if (!q->terminated && (atomic_read (&q->kick_q_count) > 0 || q->iofd_count > 0 || timeo != 0)) {
 		q->need_kicking = 1; /* Tell the world we need kicking */
@@ -135,7 +130,6 @@ int os_poll_dispatch (struct mp_queue *q, intptr_t timeo)
 		 *    need_kicking is visible globally now;
 		 * 2. Make sure the loading instruction of terminated is
 		 *    after it was written;
-		 * -- Lionfore Hao Sep 5th, 2019
 		 **/
 		aosl_mb ();
 
@@ -144,8 +138,8 @@ int os_poll_dispatch (struct mp_queue *q, intptr_t timeo)
 			 * After set need_kicking to 1, if we were told to terminate
 			 * now, then just return 0 here, do nothing else (no need to
 			 * set the need_kicking back to 0 too).
-			 * -- Lionfore Hao Sep 5th, 2019
 			 **/
+			aosl_msleep(5);
 			return 0;
 		}
 
@@ -155,14 +149,12 @@ int os_poll_dispatch (struct mp_queue *q, intptr_t timeo)
 		 * If the queued functions count > 0, then do not wait
 		 * via setting timeo to 0, and just check the fd event
 		 * for this case.
-		 * -- Lionfore Hao Sep 5th, 2019
 		 **/
 		if (atomic_read (&q->count) > 0) {
 			/**
 			 * Tell the world that no need to kick us at the
 			 * the first time, because we will not sleep for
 			 * these cases (either return 0 or timeo = 0).
-			 * -- Lionfore Hao Sep 20th, 2019
 			 **/
 			q->need_kicking = 0;
 
@@ -172,15 +164,14 @@ int os_poll_dispatch (struct mp_queue *q, intptr_t timeo)
 				 * nobody kicked us & we have no any fd, then
 				 * just return 0 here, no need to do following
 				 * other checkings.
-				 * -- Lionfore Hao Sep 5th, 2019
 				 **/
+				aosl_msleep(5);
 				return 0;
 			}
 
 			/**
 			 * If the queued functions count > 0, then do not
 			 * wait really, just check the kickings and fds.
-			 * -- Lionfore Hao Seq 5th, 2019
 			 **/
 			timeo = 0;
 		}
@@ -195,21 +186,21 @@ int os_poll_dispatch (struct mp_queue *q, intptr_t timeo)
 	return err;
 }
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 #include <unistd.h>
 #else
 #include <hal/aosl_hal_socket.h>
 #include <api/aosl_log.h>
 #include <kernel/net.h>
 #define DEFAULT_SOCKET_PORT  12543
-static int os_socket_pipe(int pipefd[2])
+static int os_socket_pipe(aosl_fd_t pipefd[2])
 {
 	static int port = DEFAULT_SOCKET_PORT;
 	port = ((port + 1) % 100) + DEFAULT_SOCKET_PORT;
 
 	// server
-	int servfd = aosl_hal_sk_socket(AOSL_AF_INET, AOSL_SOCK_DGRAM, 0);
-  if (servfd < 0) {
+	aosl_fd_t servfd = aosl_hal_sk_socket(AOSL_AF_INET, AOSL_SOCK_DGRAM, 0);
+  if (aosl_fd_invalid(servfd)) {
     AOSL_LOG_ERR("socket error");
     return -1;
   }
@@ -226,9 +217,9 @@ static int os_socket_pipe(int pipefd[2])
 	}
 
 	// client
-	int connfd = aosl_hal_sk_socket(AOSL_AF_INET, AOSL_SOCK_DGRAM, 0);
-	if (connfd < 0) {
-		AOSL_LOG_ERR("socket error: %d", connfd);
+	aosl_fd_t connfd = aosl_hal_sk_socket(AOSL_AF_INET, AOSL_SOCK_DGRAM, 0);
+	if (aosl_fd_invalid(connfd)) {
+		AOSL_LOG_ERR("socket error");
 		return -1;
 	}
 	if (aosl_hal_sk_connect(connfd, (aosl_sockaddr_t*)&servaddr) < 0) {
@@ -244,9 +235,9 @@ static int os_socket_pipe(int pipefd[2])
 }
 #endif
 
-static int os_pipe(int pipefd[2], int *type)
+static int os_pipe(aosl_fd_t pipefd[2], int *type)
 {
-#if defined(__linux__)
+#if defined(__linux__) || defined(__APPLE__)
 	*type = WAKEUP_TYPE_PIPE;
 	return pipe (pipefd);
 #else
@@ -262,13 +253,13 @@ static void os_fini_sigp (struct mp_queue *q)
 		os_deactivate_sigp (q);
 		q->sigp.activated = 0;
 	}
-	if (q->sigp.piper != -1) {
+	if (!aosl_fd_invalid(q->sigp.piper)) {
 		aosl_hal_sk_close (q->sigp.piper);
-		q->sigp.piper = -1;
+		q->sigp.piper = AOSL_INVALID_FD;
 	}
-	if (q->sigp.pipew != -1) {
+	if (!aosl_fd_invalid(q->sigp.pipew)) {
 		aosl_hal_sk_close (q->sigp.pipew);
-		q->sigp.pipew = -1;
+		q->sigp.pipew = AOSL_INVALID_FD;
 	}
 
 	// for event
@@ -282,7 +273,7 @@ static int os_init_sigp_pipe (struct mp_queue *q)
 {
 	// init
 	int err;
-	int fds [2];
+	aosl_fd_t fds [2];
 	int type;
 
 	err = os_pipe(fds, &type);
@@ -300,7 +291,7 @@ static int os_init_sigp_pipe (struct mp_queue *q)
 	if (err < 0)
 		goto __sigp_fini;
 
-	err = os_deactivate_sigp (q);
+	err = os_activate_sigp (q);
 	if (err < 0) {
 		goto __sigp_fini;
 	}
@@ -333,8 +324,8 @@ static int os_init_sigp (struct mp_queue *q)
 
 	// init sigp to invalid
 	q->sigp.type = WAKEUP_TYPE_NONE;
-	q->sigp.piper = -1;
-	q->sigp.pipew = -1;
+	q->sigp.piper = AOSL_INVALID_FD;
+	q->sigp.pipew = AOSL_INVALID_FD;
 	q->sigp.activated = 0;
 	q->sigp.event = NULL;
 

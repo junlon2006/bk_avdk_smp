@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 21st, 2018
+/***************************************************************************
  * Module:	Socket helper utils implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #include <stdio.h>
 #include <string.h>
@@ -25,12 +22,15 @@
 #include <kernel/iofd.h>
 #include <kernel/byteorder/generic.h>
 #include <kernel/net.h>
+
 #ifdef CONFIG_AOSL_IPV6
 #include <kernel/ipv6.h>
 #endif
 
 // TODO(zgx): flags, fd had been set noblock, maybe not need this flag
 #define MSG_DONTWAIT 0
+
+#define UNUSED(expr) (void)(expr)
 
 __export_in_so__ uint32_t aosl_htonl(uint32_t x)
 {
@@ -81,7 +81,7 @@ __export_in_so__ int aosl_setsockopt (aosl_fd_t sockfd, int level, int optname, 
 }
 #endif
 
-int aosl_get_sockaddr(int sockfd, aosl_sockaddr_t *addr)
+int aosl_get_sockaddr(aosl_fd_t sockfd, aosl_sockaddr_t *addr)
 {
 	// get port
 	aosl_sockaddr_t sock_addr = {0};
@@ -109,49 +109,63 @@ struct sendto_args {
 	aosl_sk_addr_t addr;
 };
 
-static ssize_t __default_accept (aosl_fd_t fd, void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
+static isize_t __default_accept (aosl_fd_t fd, void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
 {
 	aosl_accept_data_t *accept_data = (aosl_accept_data_t *)buf;
 
+	UNUSED (len);
+	UNUSED (extra);
+	UNUSED (argc);
+	UNUSED (argv);
+
 	accept_data->newsk = aosl_hal_sk_accept (fd, &accept_data->addr.sa);
 	if (aosl_fd_invalid (accept_data->newsk)) {
-		aosl_hal_set_error((int)accept_data->newsk);
-		return -aosl_errno;
+		return aosl_hal_set_error(AOSL_HAL_RET_EHAL);
 	}
 
 	return sizeof (aosl_accept_data_t);
 }
 
-static ssize_t __default_recv (aosl_fd_t fd, void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
+static isize_t __default_recv (aosl_fd_t fd, void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
 {
 	int flags = MSG_DONTWAIT;
-	ssize_t err = aosl_hal_sk_recv (fd, buf, len, flags);
+	isize_t err;
+
+	UNUSED (extra);
+	UNUSED (argc);
+	UNUSED (argv);
+
+	err = aosl_hal_sk_recv (fd, buf, len, flags);
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 	return err;
 }
 
-static ssize_t __default_send (aosl_fd_t fd, const void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
+static isize_t __default_send (aosl_fd_t fd, const void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
 {
 	int flags = MSG_DONTWAIT;
-	ssize_t err;
+	isize_t err;
+
+	UNUSED (argc);
+	UNUSED (argv);
 
 	if (extra >= sizeof (flags))
 		flags |= *(int *)AOSL_P_ALIGN_PTR ((char *)buf + len);
 
 	err = aosl_hal_sk_send (fd, buf, len, flags);
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 	return err;
 }
 
-static ssize_t __default_recvfrom (aosl_fd_t fd, void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
+static isize_t __default_recvfrom (aosl_fd_t fd, void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
 {
-	ssize_t err;
+	isize_t err;
+
+	UNUSED (argc);
+	UNUSED (argv);
 
 	if (extra >= sizeof (struct recvfrom_args)) {
 		struct recvfrom_args *args = (struct recvfrom_args *)AOSL_P_ALIGN_PTR ((char *)buf + len);
@@ -161,18 +175,20 @@ static ssize_t __default_recvfrom (aosl_fd_t fd, void *buf, size_t len, size_t e
 	}
 
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 
 	return err;
 }
 
-static ssize_t __default_sendto (aosl_fd_t fd, const void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
+static isize_t __default_sendto (aosl_fd_t fd, const void *buf, size_t len, size_t extra, uintptr_t argc, uintptr_t argv [])
 {
 	int flags = MSG_DONTWAIT;
 	void *extra_data = AOSL_P_ALIGN_PTR ((char *)buf + len);
-	ssize_t err;
+	isize_t err;
+
+	UNUSED (argc);
+	UNUSED (argv);
 
 	if (extra >= sizeof (flags))
 		flags |= *(int *)extra_data;
@@ -185,8 +201,7 @@ static ssize_t __default_sendto (aosl_fd_t fd, const void *buf, size_t len, size
 	}
 
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 
 	return err;
@@ -199,8 +214,10 @@ static __inline__ int __do_connect (aosl_fd_t sockfd, const aosl_sockaddr_t *des
 
 	err = aosl_hal_sk_connect (sockfd, dest_addr);
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		if (err == AOSL_HAL_RET_EINPROGRESS) {
+			return 0;
+		}
+		return aosl_hal_set_error(err);
 	}
 
 	f = iofd_get (sockfd);
@@ -245,7 +262,7 @@ static int __mpq_connect_args (aosl_fd_t fd, const aosl_sockaddr_t *dest_addr, i
 	if (q == NULL)
 		return -AOSL_EINVAL;
 
-	argv = alloca (sizeof (uintptr_t) * argc);
+	argv = aosl_alloca (sizeof (uintptr_t) * argc);
 	for (l = 0; l < argc; l++)
 		argv [l] = va_arg (args, uintptr_t);
 
@@ -277,6 +294,9 @@ static void ____target_q_connect (const aosl_ts_t *queued_ts_p, aosl_refobj_t ro
 	aosl_fd_data_t data_f = (aosl_fd_data_t)argv [6];
 	aosl_fd_event_t event_f = (aosl_fd_event_t)argv [7];
 
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+
 	*err_p = __this_q_connect_argv (THIS_MPQ (), fd, dest_addr, timeo, max_pkt_size, chk_pkt_f, data_f, event_f, argc - 9, &argv [9]);
 }
 
@@ -296,7 +316,7 @@ static int __mpq_connect_on_q_args (aosl_mpq_t qid, aosl_fd_t fd, const aosl_soc
 	if (q == NULL)
 		return -AOSL_EINVAL;
 
-	argv = alloca (sizeof (uintptr_t) * (9 + argc));
+	argv = aosl_alloca (sizeof (uintptr_t) * (9 + argc));
 	argv [0] = (uintptr_t)&err;
 	argv [1] = (uintptr_t)fd;
 	argv [2] = (uintptr_t)dest_addr;
@@ -336,12 +356,11 @@ static int __this_q_listen_argv (struct mp_queue *q, aosl_fd_t fd, int backlog, 
 
 	int err = aosl_hal_sk_listen (fd, backlog);
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 
 	max_pkt_size = sizeof (aosl_accept_data_t);
-	return __mpq_add_fd_argv (q, fd, -1, max_pkt_size, 0, IOFD_SOCK_LISTEN, __default_accept, NULL, NULL, NULL, (aosl_fd_data_t)accepted_f, event_f, argc, argv);
+	return __mpq_add_fd_argv (q, fd, -1, max_pkt_size, 0, IOFD_SOCK_LISTEN, __default_accept, NULL, NULL, NULL, (aosl_fd_data_t)(void *)accepted_f, event_f, argc, argv);
 }
 
 static int __mpq_listen_args (aosl_fd_t fd, int backlog, aosl_sk_accepted_t accepted_f, aosl_fd_event_t event_f, uintptr_t argc, va_list args)
@@ -357,7 +376,7 @@ static int __mpq_listen_args (aosl_fd_t fd, int backlog, aosl_sk_accepted_t acce
 	if (q == NULL)
 		return -AOSL_EINVAL;
 
-	argv = alloca (sizeof (uintptr_t) * argc);
+	argv = aosl_alloca (sizeof (uintptr_t) * argc);
 	for (l = 0; l < argc; l++)
 		argv [l] = va_arg (args, uintptr_t);
 
@@ -384,6 +403,9 @@ static void ____target_q_listen (const aosl_ts_t *queued_ts_p, aosl_refobj_t rob
 	aosl_sk_accepted_t accepted_f = (aosl_sk_accepted_t)argv [3];
 	aosl_fd_event_t event_f = (aosl_fd_event_t)argv [4];
 
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+
 	*err_p = __this_q_listen_argv (THIS_MPQ (), fd, backlog, accepted_f, event_f, argc - 5, &argv [5]);
 }
 
@@ -403,7 +425,7 @@ __export_in_so__ int aosl_mpq_listen_on_q (aosl_mpq_t qid, aosl_fd_t fd, int bac
 	if (q == NULL)
 		return_err (-AOSL_EINVAL);
 
-	argv = alloca (sizeof (uintptr_t) * (5 + argc));
+	argv = aosl_alloca (sizeof (uintptr_t) * (5 + argc));
 	argv [0] = (uintptr_t)&err;
 	argv [1] = (uintptr_t)fd;
 	argv [2] = (uintptr_t)backlog;
@@ -426,7 +448,7 @@ static __inline__ int __this_q_add_dgram_sk_argv (struct mp_queue *q, aosl_fd_t 
 				aosl_dgram_sk_data_t data_f, aosl_fd_event_t event_f, uintptr_t argc, uintptr_t *argv)
 {
 	size_t extra_bytes = sizeof (struct recvfrom_args);
-	return __mpq_add_fd_argv (q, fd, -1, max_pkt_size, extra_bytes, 0, __default_recvfrom, __default_sendto, NULL, NULL, (aosl_fd_data_t)data_f, event_f, argc, argv);
+	return __mpq_add_fd_argv (q, fd, -1, max_pkt_size, extra_bytes, 0, __default_recvfrom, __default_sendto, NULL, NULL, (aosl_fd_data_t)(void *)data_f, event_f, argc, argv);
 }
 
 static int __mpq_add_dgram_sk_args (aosl_fd_t fd, size_t max_pkt_size, aosl_dgram_sk_data_t data_f, aosl_fd_event_t event_f, uintptr_t argc, va_list args)
@@ -442,7 +464,7 @@ static int __mpq_add_dgram_sk_args (aosl_fd_t fd, size_t max_pkt_size, aosl_dgra
 	if (q == NULL)
 		return -AOSL_EINVAL;
 
-	argv = alloca (sizeof (uintptr_t) * argc);
+	argv = aosl_alloca (sizeof (uintptr_t) * argc);
 	for (l = 0; l < argc; l++)
 		argv [l] = va_arg (args, uintptr_t);
 
@@ -469,6 +491,9 @@ static void ____target_q_add_dgram_sk (const aosl_ts_t *queued_ts_p, aosl_refobj
 	aosl_dgram_sk_data_t data_f = (aosl_dgram_sk_data_t)argv [3];
 	aosl_fd_event_t event_f = (aosl_fd_event_t)argv [4];
 
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+
 	*err_p = __this_q_add_dgram_sk_argv (THIS_MPQ (), fd, max_pkt_size, data_f, event_f, argc - 5, &argv [5]);
 }
 
@@ -488,7 +513,7 @@ __export_in_so__ int aosl_mpq_add_dgram_socket_on_q (aosl_mpq_t qid, aosl_fd_t f
 	if (q == NULL)
 		return_err (-AOSL_EINVAL);
 
-	argv = alloca (sizeof (uintptr_t) * (5 + argc));
+	argv = aosl_alloca (sizeof (uintptr_t) * (5 + argc));
 	argv [0] = (uintptr_t)&err;
 	argv [1] = (uintptr_t)fd;
 	argv [2] = (uintptr_t)max_pkt_size;
@@ -529,7 +554,7 @@ static int __mpq_add_stream_sk_args (aosl_fd_t fd, size_t max_pkt_size, aosl_che
 	if (q == NULL)
 		return -AOSL_EINVAL;
 
-	argv = alloca (sizeof (uintptr_t) * argc);
+	argv = aosl_alloca (sizeof (uintptr_t) * argc);
 	for (l = 0; l < argc; l++)
 		argv [l] = va_arg (args, uintptr_t);
 
@@ -558,12 +583,15 @@ static void ____target_q_add_stream_sk (const aosl_ts_t *queued_ts_p, aosl_refob
 	aosl_fd_data_t data_f = (aosl_fd_data_t)argv [4];
 	aosl_fd_event_t event_f = (aosl_fd_event_t)argv [5];
 
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+
 	*err_p = __this_q_add_stream_sk_argv (THIS_MPQ (), fd, max_pkt_size, chk_pkt_f, data_f, event_f, argc - 6, &argv [6]);
 }
 
 __export_in_so__ int aosl_mpq_add_stream_socket_on_q (aosl_mpq_t qid, aosl_fd_t fd,
 								size_t max_pkt_size, aosl_check_packet_t chk_pkt_f,
-		aosl_dgram_sk_data_t data_f, aosl_fd_event_t event_f, uintptr_t argc, ...)
+		aosl_fd_data_t data_f, aosl_fd_event_t event_f, uintptr_t argc, ...)
 {
 	struct mp_queue *q;
 	va_list args;
@@ -578,7 +606,7 @@ __export_in_so__ int aosl_mpq_add_stream_socket_on_q (aosl_mpq_t qid, aosl_fd_t 
 	if (q == NULL)
 		return_err (-AOSL_EINVAL);
 
-	argv = alloca (sizeof (uintptr_t) * (6 + argc));
+	argv = aosl_alloca (sizeof (uintptr_t) * (6 + argc));
 	argv [0] = (uintptr_t)&err;
 	argv [1] = (uintptr_t)fd;
 	argv [2] = (uintptr_t)max_pkt_size;
@@ -598,11 +626,11 @@ __export_in_so__ int aosl_mpq_add_stream_socket_on_q (aosl_mpq_t qid, aosl_fd_t 
 	return_err (err);
 }
 
-static ssize_t ____send (struct iofd *f, const void *buf, size_t len, int flags)
+static isize_t ____send (struct iofd *f, const void *buf, size_t len, int flags)
 {
 	w_buffer_t *node;
 	int *flags_p;
-	ssize_t err;
+	isize_t err;
 
 	if (len > FD_MAX_WBUF_SIZE)
 		return -AOSL_EMSGSIZE;
@@ -616,10 +644,8 @@ static ssize_t ____send (struct iofd *f, const void *buf, size_t len, int flags)
 	}
 
 	err = aosl_hal_sk_send (iofd_fobj (f)->fd, buf, len, flags);
-	f->flags |= AOSL_POLLOUT;
 	if (err <= 0) {
-		aosl_hal_set_error((int)err);
-		return -aosl_errno;
+		return aosl_hal_set_error((int)err);
 	}
 
 	if ((size_t)err < len) {
@@ -644,25 +670,28 @@ __queue_it:
 
 static void ____target_q_send (const aosl_ts_t *queued_ts_p, aosl_refobj_t robj, uintptr_t argc, uintptr_t argv [])
 {
-	ssize_t *err_p = (ssize_t *)argv [0];
+	isize_t *err_p = (isize_t *)argv [0];
 	struct iofd *f = (struct iofd *)argv [1];
 	const void *buf = (const void *)argv [2];
 	size_t len = (size_t)argv [3];
 	int flags = (int)argv [4];
 
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+	UNUSED (argc);
+
 	*err_p = ____send (f, buf, len, flags);
 }
 
-__export_in_so__ ssize_t aosl_send (aosl_fd_t fd, const void *buf, size_t len, int flags)
+__export_in_so__ isize_t aosl_send (aosl_fd_t fd, const void *buf, size_t len, int flags)
 {
 	struct iofd *f;
-	ssize_t err = -AOSL_EINVAL;
+	isize_t err = -AOSL_EINVAL;
 
 	f = iofd_get (fd);
 	/**
 	 * We do not support write operation on a fd if it is not added to
 	 * the mpq, please use the system call API directly in these cases.
-	 * -- Lionfore Hao Oct 21st, 2018
 	 **/
 	if (f != NULL) {
 		struct mp_queue *q = __mpq_get_or_this (f->q);
@@ -686,12 +715,12 @@ __export_in_so__ ssize_t aosl_send (aosl_fd_t fd, const void *buf, size_t len, i
 	return_err (err);
 }
 
-static ssize_t ____sendto (struct iofd *f, const void *buf, size_t len, int flags,
+static isize_t ____sendto (struct iofd *f, const void *buf, size_t len, int flags,
 							const aosl_sockaddr_t *dest_addr)
 {
 	w_buffer_t *node;
 	struct sendto_args *args;
-	ssize_t err;
+	isize_t err;
 
 	if (len > FD_MAX_WBUF_SIZE)
 		return -AOSL_EMSGSIZE;
@@ -704,10 +733,8 @@ static ssize_t ____sendto (struct iofd *f, const void *buf, size_t len, int flag
 		goto __queue_it;
 	}
 	err = aosl_hal_sk_sendto (iofd_fobj (f)->fd, buf, len, flags, dest_addr);
-	f->flags |= AOSL_POLLOUT;
 	if (err <= 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
 	}
 
 	if ((size_t)err < len) {
@@ -732,26 +759,29 @@ __queue_it:
 
 static void ____target_q_sendto (const aosl_ts_t *queued_ts_p, aosl_refobj_t robj, uintptr_t argc, uintptr_t argv [])
 {
-	ssize_t *err_p = (ssize_t *)argv [0];
+	isize_t *err_p = (isize_t *)argv [0];
 	struct iofd *f = (struct iofd *)argv [1];
 	const void *buf = (const void *)argv [2];
 	size_t len = (size_t)argv [3];
 	int flags = (int)argv [4];
 	const aosl_sockaddr_t *dest_addr = (const aosl_sockaddr_t *)argv [5];
 
+	UNUSED (queued_ts_p);
+	UNUSED (robj);
+	UNUSED (argc);
+
 	*err_p = ____sendto (f, buf, len, flags, dest_addr);
 }
 
-__export_in_so__ ssize_t aosl_sendto (aosl_fd_t fd, const void *buf, size_t len, int flags, const aosl_sockaddr_t *dest_addr)
+__export_in_so__ isize_t aosl_sendto (aosl_fd_t fd, const void *buf, size_t len, int flags, const aosl_sockaddr_t *dest_addr)
 {
 	struct iofd *f;
-	ssize_t err = -AOSL_EINVAL;
+	isize_t err = -AOSL_EINVAL;
 
 	f = iofd_get (fd);
 	/**
 	 * We do not support write operation on a fd if it is not added to
 	 * the mpq, please use the system call API directly in these cases.
-	 * -- Lionfore Hao Oct 21st, 2018
 	 **/
 	if (f != NULL) {
 		struct mp_queue *q = __mpq_get_or_this (f->q);
@@ -798,7 +828,7 @@ __export_in_so__ int aosl_ip_sk_addr_init_with_port (aosl_sk_addr_t *sk_addr, ui
 	return 0;
 }
 
-__export_in_so__ int aosl_ip_sk_bind_port_only (aosl_fd_t sk, uint16_t af, unsigned short port)
+__export_in_so__ int aosl_bind_port_only (aosl_fd_t sk, uint16_t af, unsigned short port)
 {
 	aosl_sk_addr_t sk_addr;
 
@@ -821,8 +851,38 @@ __export_in_so__ int aosl_ip_sk_bind_port_only (aosl_fd_t sk, uint16_t af, unsig
 	sk_addr.sa.sa_family = af;
 	int err = aosl_hal_sk_bind (sk, &sk_addr.sa);
 	if (err < 0) {
-		aosl_hal_set_error(err);
-		return -aosl_errno;
+		return aosl_hal_set_error(err);
+	}
+	return 0;
+}
+
+__export_in_so__ int aosl_bind_device (aosl_fd_t sockfd, const char *if_name)
+{
+	if (if_name == NULL || if_name[0] == '\0') {
+		aosl_errno = AOSL_EINVAL;
+		return -1;
+	}
+	int err = aosl_hal_sk_bind_device (sockfd, if_name);
+	if (err < 0) {
+		return aosl_hal_set_error(err);
+	}
+	return 0;
+}
+
+__export_in_so__ int aosl_set_socket_dscp(aosl_fd_t sockfd, int af, int dscp)
+{
+	if (af != AOSL_AF_INET && af != AOSL_AF_INET6) {
+		aosl_errno = AOSL_EINVAL;
+		return -1;
+	}
+	if (dscp < 0 || dscp > 63) {
+		aosl_errno = AOSL_EINVAL;
+		return -1;
+	}
+
+	int err = aosl_hal_sk_set_dscp(sockfd, (enum aosl_socket_domain)af, (uint8_t)dscp);
+	if (err < 0) {
+		return aosl_hal_set_error(err);
 	}
 	return 0;
 }
@@ -1006,7 +1066,7 @@ __export_in_so__ int aosl_ipv6_sk_addr_to_ipv4 (aosl_sockaddr_t *sk_addr_v4, con
 #endif
 }
 
-__export_in_so__ ssize_t aosl_ip_sk_sendto (const aosl_ip_sk_t *sk, const void *buf, size_t len, int flags, const aosl_sockaddr_t *dest_addr)
+__export_in_so__ isize_t aosl_ip_sk_sendto (const aosl_ip_sk_t *sk, const void *buf, size_t len, int flags, const aosl_sockaddr_t *dest_addr)
 {
 	aosl_fd_t fd;
 #ifdef CONFIG_AOSL_IPV6
@@ -1073,6 +1133,26 @@ __export_in_so__ void aosl_ip_sk_close (aosl_ip_sk_t *sk)
 		sk->v6 = AOSL_INVALID_FD;
 	}
 #endif
+}
+
+__export_in_so__ const char *aosl_sockaddr_str(const aosl_sockaddr_t *addr, char *addr_buf, size_t buf_len)
+{
+	switch (addr->sa_family) {
+	case AOSL_AF_INET:
+		k_inet_ntop (AOSL_AF_INET, &addr->sin_addr, addr_buf, buf_len);
+		break;
+
+#ifdef CONFIG_AOSL_IPV6
+	case AOSL_AF_INET6:
+		k_inet_ntop (AOSL_AF_INET6, &addr->sin6_addr, addr_buf, buf_len);
+		break;
+#endif
+	default:
+		snprintf (addr_buf, buf_len, "<Unknown af %d>", addr->sa_family);
+		break;
+	}
+
+	return addr_buf;
 }
 
 __export_in_so__ const char *aosl_inet_addr_str (int af, const void *addr, char *addr_buf, size_t buf_len)
@@ -1179,7 +1259,6 @@ __export_in_so__ int aosl_ip_sk_addr_from_string (aosl_sk_addr_t *sk_addr, const
 		/**
 		 * This is very important for XNU kernel, if we do not do this,
 		 * then sendto would return error EHOSTUNREACH.
-		 * -- Lionfore Hao Aug 19th, 2018
 		 **/
 		memset (&sk_addr->in6, 0, sizeof (aosl_sockaddr_in6_t));
 
@@ -1195,7 +1274,6 @@ __export_in_so__ int aosl_ip_sk_addr_from_string (aosl_sk_addr_t *sk_addr, const
 	/**
 	 * This is very important for XNU kernel, if we do not do this,
 	 * then sendto would return error EHOSTUNREACH.
-	 * -- Lionfore Hao Aug 19th, 2018
 	 **/
 	memset (&sk_addr->in, 0, sizeof (aosl_sockaddr_in_t));
 

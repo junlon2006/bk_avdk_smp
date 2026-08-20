@@ -1,16 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 24th, 2020
- * Module:	AOSL RB tree based TLS implementation for those
- *          OS having no TLS support.
+/***************************************************************************
+ * Module:	AOSL RB tree based TLS implementation
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2020 Agora IO
- * All rights reserved.
- *
- *************************************************************/
-
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #include <string.h>
 
 #include <kernel/types.h>
@@ -31,11 +26,8 @@ struct k_tls_slot {
 
 static k_rwlock_t tls_key_id_lock;
 static bitmap_t *tls_key_id_bits = NULL;
-
-static struct k_tls_slot static_tls_slot_table [STATIC_TLS_KEY_ID_SIZE];
-static struct k_tls_slot *tls_slot_table = static_tls_slot_table;
-
-static int tls_key_id_size = STATIC_TLS_KEY_ID_SIZE;
+static struct k_tls_slot *tls_slot_table = NULL;
+static int tls_key_id_size = 0;
 
 /* The max simultaneous TLS key count we supported */
 #define TLS_KEY_ID_MAX_SIZE 512
@@ -56,7 +48,7 @@ static int alloc_tls_key (void)
 			return -AOSL_EOVERFLOW;
 		}
 
-		new_size = tls_key_id_size + 8;
+		new_size = tls_key_id_size + STATIC_TLS_KEY_ID_SIZE;
 
 		new_bits = bitmap_create (new_size);
 		if (!new_bits) {
@@ -76,17 +68,14 @@ static int alloc_tls_key (void)
 		memset (new_table + tls_key_id_size, 0, (new_size - tls_key_id_size) * sizeof (struct k_tls_slot));
 
 		bitmap_destroy (tls_key_id_bits);
-
-		if (tls_slot_table != static_tls_slot_table) {
-			aosl_free (tls_slot_table);
-		}
+		aosl_free (tls_slot_table);
 
 		tls_key_id_bits = new_bits;
 		tls_slot_table = new_table;
 		tls_key_id_size = new_size;
 
 		key = bitmap_find_first_zero_bit (tls_key_id_bits);
-		BUG_ON (key >= 0);
+		BUG_ON (key < 0);
 	}
 
 	bitmap_set (tls_key_id_bits, key);
@@ -169,7 +158,17 @@ static int cmp_thread (struct aosl_rb_node *rb_node, struct aosl_rb_node *node, 
 	return 0;
 }
 
-static struct k_tls_value* get_tls_value (k_tls_key_t key)
+static void tls_thread_node_destory(struct tls_thread_node *node)
+{
+	if (node) {
+		if (node->tls_key_table) {
+			aosl_free(node->tls_key_table);
+		}
+		aosl_free(node);
+	}
+}
+
+void *k_tls_key_get (k_tls_key_t key)
 {
 	k_thread_t this_thread;
 	struct aosl_rb_node *node;
@@ -208,25 +207,7 @@ static struct k_tls_value* get_tls_value (k_tls_key_t key)
 		}
 	}
 
-	return tls_val;
-}
-
-void *k_tls_key_get (k_tls_key_t key)
-{
-	struct k_tls_value* tls_val;
-	if (NULL == (tls_val = get_tls_value (key)))
-		return NULL;
-
 	return tls_val->val;
-}
-
-void **k_tls_key_get_ref (k_tls_key_t key)
-{
-	struct k_tls_value* tls_val;
-	if (NULL == (tls_val = get_tls_value (key)))
-		return NULL;
-
-	return &tls_val->val;
 }
 
 int k_tls_key_set (k_tls_key_t key, void *value)
@@ -275,14 +256,13 @@ int k_tls_key_set (k_tls_key_t key, void *value)
 		 * because the thread node can only be created by the thread
 		 * itself, so no racing condition after we released the read
 		 * lock and before the write lock.
-		 * -- Lionfore Hao Jul 23rd, 2020
 		 **/
 		aosl_rb_insert_node (&thread_tree, &thread_node->rb_node);
 		k_rwlock_wrunlock (&thread_tree_lock);
 	}
 
 	if (key >= (int)thread_node->tls_key_table_size) {
-		int new_size = tls_key_id_size;
+		size_t new_size = (size_t)tls_key_id_size;
 		struct k_tls_value *new_table = (struct k_tls_value *)aosl_malloc (sizeof (struct k_tls_value) * new_size);
 		if (new_table == NULL) {
 			abort ();
@@ -313,51 +293,29 @@ int k_tls_key_delete (k_tls_key_t key)
 
 void rb_tls_init (void)
 {
-	int i;
-	tls_key_id_bits = bitmap_create (STATIC_TLS_KEY_ID_SIZE);
 	k_rwlock_init (&tls_key_id_lock);
-	aosl_rb_root_init (&thread_tree, cmp_thread);
-	k_rwlock_init (&thread_tree_lock);
-	for (i = 0; i < tls_key_id_size; i++) {
+
+	tls_key_id_bits = bitmap_create (STATIC_TLS_KEY_ID_SIZE);
+	tls_slot_table = (struct k_tls_slot *)aosl_malloc (sizeof (struct k_tls_slot) * STATIC_TLS_KEY_ID_SIZE);
+	tls_key_id_size = STATIC_TLS_KEY_ID_SIZE;
+	for (int i = 0; i < tls_key_id_size; i++) {
 		tls_slot_table [i].seq = 0;
 		/* tls_slot_table [i].dtor = NULL; */
 	}
-}
 
-static void tls_thread_node_destroy()
-{
-	struct aosl_rb_node *node;
-	struct tls_thread_node *thread_node;
-
-	for (;;) {
-		if (NULL == (node = aosl_rb_first (&thread_tree))) {
-			break;
-		}
-
-		aosl_rb_erase (&thread_tree, node);
-		thread_node = aosl_rb_entry(node, struct tls_thread_node, rb_node);
-		if (thread_node->tls_key_table) {
-			aosl_free(thread_node->tls_key_table);
-		}
-		aosl_free(thread_node);
-	}
-}
-
-void rb_tls_fini (void)
-{
-	tls_thread_node_destroy ();
 	aosl_rb_root_init (&thread_tree, cmp_thread);
+	k_rwlock_init (&thread_tree_lock);
+}
 
-	k_rwlock_wrlock (&tls_key_id_lock);
-	if (tls_slot_table != static_tls_slot_table) {
-		aosl_free (tls_slot_table);
-		tls_slot_table = static_tls_slot_table;
-	}
+void rb_tls_fini()
+{
+	aosl_rb_clear(&thread_tree, struct tls_thread_node, rb_node, tls_thread_node_destory);
 
-	bitmap_destroy (tls_key_id_bits);
+	bitmap_destroy(tls_key_id_bits);
+	aosl_free(tls_slot_table);
 	tls_key_id_bits = NULL;
-	tls_key_id_size = STATIC_TLS_KEY_ID_SIZE;
-	k_rwlock_wrunlock (&tls_key_id_lock);
+	tls_slot_table = NULL;
+	tls_key_id_size = 0;
 
 	k_rwlock_destroy (&tls_key_id_lock);
 	k_rwlock_destroy (&thread_tree_lock);

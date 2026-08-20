@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Sep 24th, 2018
+/***************************************************************************
  * Module:	AOSL threading relative internal implementations.
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #include <kernel/thread.h>
 #include <kernel/compiler.h>
 #include <kernel/err.h>
@@ -48,7 +45,7 @@ __export_in_so__ int aosl_tls_key_delete (aosl_tls_key_t key)
 	return_err (k_tls_key_delete ((k_tls_key_t)key));
 }
 
-__export_in_so__ aosl_lock_t aosl_lock_create ()
+__export_in_so__ aosl_lock_t aosl_lock_create (void)
 {
 	k_lock_t *lk = (k_lock_t *)aosl_malloc (sizeof (k_lock_t));
 	if (lk != NULL) {
@@ -78,6 +75,31 @@ __export_in_so__ void aosl_lock_destroy (aosl_lock_t lock)
 	k_lock_t *lk = (k_lock_t *)lock;
 	k_lock_destroy (lk);
 	aosl_free (lk);
+}
+
+__export_in_so__ int aosl_static_lock_init (aosl_static_lock_t *lock)
+{
+	return_err (k_static_lock_init ((k_static_lock_t *)lock));
+}
+
+__export_in_so__ void aosl_static_lock_fini (aosl_static_lock_t *lock)
+{
+	k_static_lock_fini ((k_static_lock_t *)lock);
+}
+
+__export_in_so__ int aosl_static_lock_lock (aosl_static_lock_t *lock)
+{
+	return_err (k_static_lock_lock ((k_static_lock_t *)lock));
+}
+
+__export_in_so__ int aosl_static_lock_trylock (aosl_static_lock_t *lock)
+{
+	return_err (k_static_lock_trylock ((k_static_lock_t *)lock));
+}
+
+__export_in_so__ int aosl_static_lock_unlock (aosl_static_lock_t *lock)
+{
+	return_err (k_static_lock_unlock ((k_static_lock_t *)lock));
 }
 
 __export_in_so__ aosl_rwlock_t aosl_rwlock_create (void)

@@ -1,14 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Jul 26th, 2018
+/***************************************************************************
  * Module:	Multiplex queue pool header file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 
 #ifndef __MPQP_H__
 #define __MPQP_H__
@@ -25,14 +22,14 @@ extern "C" {
 
 
 
-typedef struct __mpqp_obj_type *aosl_mpqp_t;
+typedef void *aosl_mpqp_t;
 
 
 /* This value should be big enough for the pool size */
 #define MPQP_MAX_SIZE 65536
 
 /**
- * Create a multiplex queue pool.
+ * @brief Create a multiplex queue pool.
  * Parameter:
  *   pool_size: the pool size
  *           pri: the priority of the mpq in this mpq pool, 0 for system default
@@ -58,7 +55,7 @@ extern __aosl_api__ aosl_mpqp_t aosl_mpqp_create (int pool_size, int pri, int st
     int max_idles, int flags, const char *name, aosl_mpq_init_t init, aosl_mpq_fini_t fini, void *arg);
 
 /**
- * Queue a function to the pool with args for invoking by the target thread which monitoring
+ * @brief Queue a function to the pool with args for invoking by the target thread which monitoring
  * the corresponding queue object.
  * Parameter:
  *        qp: the queue pool object
@@ -83,7 +80,7 @@ extern __aosl_api__ aosl_mpqp_t aosl_mpqp_create (int pool_size, int pri, int st
 extern __aosl_api__ aosl_mpq_t aosl_mpqp_queue (aosl_mpqp_t qp, aosl_mpq_t dq, aosl_ref_t ref, const char *f_name, aosl_mpq_func_argv_t f, uintptr_t argc, ...);
 
 /**
- * The synchronous version, the target f must have been invoked when this function returns.
+ * @brief The synchronous version, the target f must have been invoked when this function returns.
  * Parameter:
  *        qp: the queue pool object
  *       ref: the mpq object id for indicating whether the relative operation
@@ -103,7 +100,7 @@ extern __aosl_api__ aosl_mpq_t aosl_mpqp_call (aosl_mpqp_t qp, aosl_ref_t ref, c
 
 
 /**
- * The same as 'aosl_mpqp_queue' except this function takes a 'va_list' arg for the
+ * @brief The same as 'aosl_mpqp_queue' except this function takes a 'va_list' arg for the
  * variable args rather than '...'.
  **/
 extern __aosl_api__ aosl_mpq_t aosl_mpqp_queue_args (aosl_mpqp_t qp, aosl_mpq_t dq, aosl_ref_t ref, const char *f_name, aosl_mpq_func_argv_t f, uintptr_t argc, va_list args);
@@ -112,7 +109,7 @@ extern __aosl_api__ aosl_mpq_t aosl_mpqp_queue_args (aosl_mpqp_t qp, aosl_mpq_t 
 extern __aosl_api__ aosl_mpq_t aosl_mpqp_call_args (aosl_mpqp_t qp, aosl_ref_t ref, const char *f_name, aosl_mpq_func_argv_t f, uintptr_t argc, va_list args);
 
 /**
- * The same as 'aosl_mpqp_queue' except this function takes a 'uintptr_t *argv' arg for the
+ * @brief The same as 'aosl_mpqp_queue' except this function takes a 'uintptr_t *argv' arg for the
  * variable args rather than '...'.
  **/
 extern __aosl_api__ aosl_mpq_t aosl_mpqp_queue_argv (aosl_mpqp_t qp, aosl_mpq_t dq, aosl_ref_t ref, const char *f_name, aosl_mpq_func_argv_t f, uintptr_t argc, uintptr_t *argv);
@@ -122,7 +119,7 @@ extern __aosl_api__ aosl_mpq_t aosl_mpqp_call_argv (aosl_mpqp_t qp, aosl_ref_t r
 
 
 /**
- * Queue a function to the pool with a chunk of data for invoking by the target thread which monitoring
+ * @brief Queue a function to the pool with a chunk of data for invoking by the target thread which monitoring
  * the queue.
  * Parameter:
  *        qp: the queue pool object
@@ -151,7 +148,7 @@ extern __aosl_api__ aosl_mpq_t aosl_mpqp_call_data (aosl_mpqp_t qp, aosl_ref_t r
 
 
 /**
- * Queue a function to the pool and promise all queues have done
+ * @brief Queue a function to the pool and promise all queues have done
  * the previous queued jobs when invoking the this queued func.
  * Parameter:
  *        qp: the queue pool object
@@ -178,18 +175,19 @@ extern __aosl_api__ int aosl_mpqp_pool_tail_queue_argv (aosl_mpqp_t qp, aosl_mpq
 
 
 /**
- * Shrink a multiplex queue pool object by 1.
+ * @brief Shrink a multiplex queue pool object by 1.
  * Parameter:
  *        qp: the queue pool object to be shrinked
+ *      wait: whether to wait for the q exit
  * Return value:
  *        <0: the pool size is only one now, no permission to shrink any more
  *            if want shrink to zero size, please use aosl_mpqp_shrink_all;
  *         0: shrinked 1 q successfully;
  **/
-extern __aosl_api__ int aosl_mpqp_shrink (aosl_mpqp_t qp);
+extern __aosl_api__ int aosl_mpqp_shrink (aosl_mpqp_t qp, int wait);
 
 /**
- * Shrink all MPQs in a multiplex queue pool object.
+ * @brief Shrink all MPQs in a multiplex queue pool object.
  * Parameter:
  *        qp: the queue pool object to be shrinked
  *      wait: 0 for not wait, other values for wait
@@ -197,7 +195,7 @@ extern __aosl_api__ int aosl_mpqp_shrink (aosl_mpqp_t qp);
 extern __aosl_api__ void aosl_mpqp_shrink_all (aosl_mpqp_t qp, int wait);
 
 /**
- * Get the system CPUP object.
+ * @brief Get the system CPUP object.
  * Parameter:
  *       none.
  * Return value:
@@ -206,7 +204,7 @@ extern __aosl_api__ void aosl_mpqp_shrink_all (aosl_mpqp_t qp, int wait);
 extern __aosl_api__ aosl_mpqp_t aosl_cpup (void);
 
 /**
- * Get the system GPUP object.
+ * @brief Get the system GPUP object.
  * Parameter:
  *       none.
  * Return value:
@@ -215,7 +213,7 @@ extern __aosl_api__ aosl_mpqp_t aosl_cpup (void);
 extern __aosl_api__ aosl_mpqp_t aosl_gpup (void);
 
 /**
- * Get the system GENP object.
+ * @brief Get the system GENP object.
  * Parameter:
  *       none.
  * Return value:
@@ -224,7 +222,7 @@ extern __aosl_api__ aosl_mpqp_t aosl_gpup (void);
 extern __aosl_api__ aosl_mpqp_t aosl_genp (void);
 
 /**
- * Get the system LTWP object.
+ * @brief Get the system LTWP object.
  * Parameter:
  *       none.
  * Return value:
@@ -233,7 +231,7 @@ extern __aosl_api__ aosl_mpqp_t aosl_genp (void);
 extern __aosl_api__ aosl_mpqp_t aosl_ltwp (void);
 
 /**
- * Allocate an mpq object for dedicate processing some jobs according to
+ * @brief Allocate an mpq object for dedicate processing some jobs according to
  * the capability of the system. This function is pure different with the
  * aosl_mpq_create* series functions which create a new mpq object anyway,
  * instead, this function returns an mpq object according to the system
@@ -249,7 +247,7 @@ extern __aosl_api__ aosl_mpqp_t aosl_ltwp (void);
 extern __aosl_api__ aosl_mpq_t aosl_mpq_alloc (void);
 
 /**
- * Free an mpq object which returned by aosl_mpq_alloc previously.
+ * @brief Free an mpq object which returned by aosl_mpq_alloc previously.
  * Note: once the dedicated jobs have been done, must use this function
  *       to free the allocated mpq returned by previous aosl_mpq_alloc.
  * Parameter:
@@ -261,7 +259,7 @@ extern __aosl_api__ aosl_mpq_t aosl_mpq_alloc (void);
 extern __aosl_api__ int aosl_mpq_free (aosl_mpq_t qid);
 
 /**
- * Destroy a multiplex queue pool object.
+ * @brief Destroy a multiplex queue pool object.
  * Parameter:
  *        qp: the queue pool object to be destroyed
  *      wait: 0 for not wait, other values for wait

@@ -1,16 +1,11 @@
-/*************************************************************
- * Author:	Lionfore Hao (haolianfu@agora.io)
- * Date	 :	Dec 5th, 2018
+/***************************************************************************
  * Module:	AOSL reference object implementation file
  *
- *
- * This is a part of the Advanced High Performance Library.
- * Copyright (C) 2018 Agora IO
- * All rights reserved.
- *
- *************************************************************/
-
-
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #include <stdlib.h>
 
 #include <api/aosl_types.h>
@@ -28,14 +23,14 @@
 #include <kernel/err.h>
 #include <api/aosl_integer_wrappings.h>
 
+#define UNUSED(expr) (void)(expr)
 
 #define STATIC_REFOBJ_ID_POOL_SIZE 8
 
 static k_rwlock_t refobj_table_lock;
-static struct refobj *static_refobj_table [STATIC_REFOBJ_ID_POOL_SIZE];
-static struct refobj **refobj_table = static_refobj_table;
+static struct refobj **refobj_table = NULL;
 static bitmap_t *refobj_id_pool_bits = NULL;
-static int refobj_table_size = STATIC_REFOBJ_ID_POOL_SIZE;
+static int refobj_table_size = 0;
 
 /* 0 is the only invalid life id, so init it to 1 */
 static uint16_t __refobj_life_id = 1;
@@ -44,23 +39,33 @@ void k_refobj_init (void)
 {
 	int i;
 	refobj_id_pool_bits = bitmap_create (STATIC_REFOBJ_ID_POOL_SIZE);
-	for (i = 0; i < STATIC_REFOBJ_ID_POOL_SIZE; i++)
-		static_refobj_table [i] = NULL;
+	refobj_table = (struct refobj **)aosl_malloc (sizeof (struct refobj *) * STATIC_REFOBJ_ID_POOL_SIZE);
+	if (!refobj_table || !refobj_id_pool_bits) {
+		abort ();
+	}
+	refobj_table_size = STATIC_REFOBJ_ID_POOL_SIZE;
+	for (i = 0; i < STATIC_REFOBJ_ID_POOL_SIZE; i++) {
+		refobj_table [i] = NULL;
+	}
 
 	k_rwlock_init (&refobj_table_lock);
 }
 
-void k_refobj_fini (void)
+void k_refobj_fini(void)
 {
 	if (refobj_id_pool_bits) {
 		bitmap_destroy (refobj_id_pool_bits);
 		refobj_id_pool_bits = NULL;
 	}
-
-	if (refobj_table != static_refobj_table) {
+	if (refobj_table) {
+		for (int i = 0; i < refobj_table_size; i++) {
+			if (refobj_table [i] != NULL) {
+				abort ();
+			}
+		}
 		aosl_free (refobj_table);
-		refobj_table = static_refobj_table;
-		refobj_table_size = STATIC_REFOBJ_ID_POOL_SIZE;
+		refobj_table = NULL;
+		refobj_table_size = 0;
 	}
 
 	k_rwlock_destroy (&refobj_table_lock);
@@ -70,7 +75,7 @@ void k_refobj_fini (void)
 #define REFOBJ_ID_POOL_MAX_SIZE 20480
 #define MIN_REFOBJ_ID 0
 
-static int get_unused_refobj_id ()
+static int get_unused_refobj_id (void)
 {
 	int ref_id;
 
@@ -86,7 +91,7 @@ static int get_unused_refobj_id ()
 			return -AOSL_EOVERFLOW;
 		}
 
-		new_table_size = refobj_table_size + 64;
+		new_table_size = refobj_table_size + 8;
 
 		new_bits = bitmap_create (new_table_size);
 		if (!new_bits) {
@@ -113,7 +118,7 @@ static int get_unused_refobj_id ()
 		refobj_table_size = new_table_size;
 
 		ref_id = bitmap_find_first_zero_bit (refobj_id_pool_bits);
-		BUG_ON (ref_id >= 0);
+		BUG_ON (ref_id < 0);
 	}
 
 	bitmap_set (refobj_id_pool_bits, ref_id);
@@ -162,7 +167,6 @@ static void __refobj_id_install (int ref_id, struct refobj *obj)
 		/**
 		 * 0 is the only invalid life id, so reset it to
 		 * 1 if we the life id counter wrapped back.
-		 * -- Lionfore Hao Apr 13th, 2019
 		 **/
 		if (__refobj_life_id == 0)
 			__refobj_life_id = 1;
@@ -242,7 +246,6 @@ static void refobj_lock_threads_cleanup (struct refobj *robj)
 	if (robj->thread_nodes.count > THREAD_CLEANUP_THRESHOLD) {
 		/**
 		 * Using the LRD traversing order to do the cleanup.
-		 * -- Lionfore Hao Nov 9th, 2019
 		 **/
 		k_rwlock_wrlock (&robj->thread_nodes_lock);
 		aosl_rb_traverse_lrd (&robj->thread_nodes, __check_erase_node, (void *)robj);
@@ -304,7 +307,6 @@ static struct robj_thread_node *robj_this_thread_node_get (struct refobj *robj, 
 		 * because the thread node can only be created by the thread
 		 * itself, so no racing condition after we released the read
 		 * lock and before the write lock.
-		 * -- Lionfore Hao Nov 13th, 2019
 		 **/
 		aosl_rb_insert_node (&robj->thread_nodes, &thread_node->rb_node);
 		k_rwlock_wrunlock (&robj->thread_nodes_lock);
@@ -330,7 +332,6 @@ static void refobj_thread_rdlock (struct refobj *robj)
 	if (thread_wrlocked (thread_node)) {
 		/**
 		 * Abort it for finding the potential deadlock bug ASAP.
-		 * -- Lionfore Hao Nov 9th, 2019
 		 **/
 		abort ();
 	}
@@ -338,7 +339,6 @@ static void refobj_thread_rdlock (struct refobj *robj)
 	if (!refobj_is_rdlock_recursive (robj) && thread_rdlock_count (thread_node) > 0) {
 		/**
 		 * Abort it for finding the potential bug ASAP.
-		 * -- Lionfore Hao Nov 9th, 2019
 		 **/
 		abort ();
 	}
@@ -363,7 +363,6 @@ static void refobj_thread_rdunlock (struct refobj *robj)
 	/**
 	 * The thread_node might be freed by the following cleanup,
 	 * so retrieve and save the count first.
-	 * -- Lionfore Hao Nov 9th, 2019
 	 **/
 	count = thread_rdlock_count (thread_node);
 	robj_this_thread_node_put (thread_node);
@@ -372,7 +371,6 @@ static void refobj_thread_rdunlock (struct refobj *robj)
 
 	/**
 	 * This is the chance to do the threads cleanup.
-	 * -- Lionfore Hao Nov 9th, 2019
 	 **/
 	refobj_lock_threads_cleanup (robj);
 }
@@ -385,7 +383,6 @@ static void refobj_thread_wrlock (struct refobj *robj, int rdlocked)
 	if (!thread_lock_free (thread_node)) {
 		/**
 		 * Abort it for finding the potential deadlock bug ASAP.
-		 * -- Lionfore Hao Nov 9th, 2019
 		 **/
 		abort ();
 	}
@@ -417,13 +414,13 @@ static void refobj_thread_wrunlock (struct refobj *robj, int rdlocked)
 
 	/**
 	 * This is the chance to do the threads cleanup.
-	 * -- Lionfore Hao Nov 9th, 2019
 	 **/
 	refobj_lock_threads_cleanup (robj);
 }
 
 static int refobj_ctor (struct refobj *robj, void *arg, aosl_ref_dtor_t dtor, int modify_async, int rdlock_recursive, int caller_free, va_list args)
 {
+	UNUSED (args);
 	robj->arg = arg;
 	robj->dtor = dtor;
 	atomic_set (&robj->usage, 1);
@@ -512,7 +509,6 @@ static void refobj_free (struct refobj *robj)
 	 * Call the refobj type dtor, and it is the responsibility
 	 * of destructor of the object type to call the destructor
 	 * of its' base class.
-	 * -- Lionfore Hao Jul 29th, 2019
 	 **/
 	if (robj->type->dtor != NULL)
 		robj->type->dtor (robj);
@@ -524,7 +520,6 @@ static void refobj_free (struct refobj *robj)
 	 * refobj.
 	 * Free it just before we free the refobj itself
 	 * should be better for these cases.
-	 * -- Lionfore Hao Dec 8th, 2018
 	 **/
 	__put_unused_refobj_id (ref_id - MIN_REFOBJ_ID);
 	aosl_free (robj);
@@ -596,7 +591,6 @@ int refobj_rdlock (struct refobj *robj)
 		 * If the ref object specified by robj is the current running ref object
 		 * and it is not modify async type, then no lock needed, because we have
 		 * already held the read lock.
-		 * -- Lionfore Hao Jun 16th, 2019
 		 **/
 		goto __nolock_needed;
 	}
@@ -604,7 +598,6 @@ int refobj_rdlock (struct refobj *robj)
 	/**
 	 * The read lock operation on mpq uses __refobj_rdlock_raw directly, so the previous
 	 * 'on this q' checking guarantees that we will not read lock more than once.
-	 * -- Lionfore Hao Nov 9th, 2019
 	 **/
 	refobj_thread_rdlock (robj);
 	if (refobj_is_destroyed (robj)) {
@@ -623,7 +616,6 @@ void refobj_rdunlock (struct refobj *robj)
 		 * If the ref object specified by robj is the current running ref object
 		 * and it is not modify async type, then do not unlock here, because we
 		 * did not rdlock it in the previous pairing lock operation.
-		 * -- Lionfore Hao Jun 16th, 2019
 		 **/
 		return;
 	}
@@ -631,7 +623,6 @@ void refobj_rdunlock (struct refobj *robj)
 	/**
 	 * The read unlock operation on mpq uses __refobj_rdunlock_raw directly, so the previous
 	 * 'on this q' checking guarantees that we will not read unlock more than once.
-	 * -- Lionfore Hao Nov 9th, 2019
 	 **/
 	refobj_thread_rdunlock (robj);
 }
@@ -645,7 +636,6 @@ static int refobj_wrlock (struct refobj *robj, int rdlocked)
 			/**
 			 * This should not happen obviously because
 			 * we hold the read lock now.
-			 * -- Lionfore Hao Mar 6th, 2020
 			 **/
 			abort ();
 		}
@@ -691,7 +681,6 @@ static int __refobj_op_argv (struct refobj *robj, enum refobj_op_type op, aosl_r
 			 * If the ref object specified by robj is the current running ref object
 			 * and it is not modify async type, then trying to write lock it would
 			 * lead to deadlock, so just abort it here to report bug.
-			 * -- Lionfore Hao Feb 19th, 2020
 			 **/
 			rdlocked = 1;
 		}
@@ -737,7 +726,7 @@ static int __ref_op_args (aosl_ref_t ref, enum refobj_op_type op, aosl_ref_func_
 	if (argc > 0) {
 		uintptr_t l;
 
-		argv = alloca (sizeof (uintptr_t) * argc);
+		argv = aosl_alloca (sizeof (uintptr_t) * argc);
 		for (l = 0; l < argc; l++)
 			argv [l] = va_arg (args, uintptr_t);
 	}
@@ -755,7 +744,7 @@ static int __refobj_op_args (struct refobj *robj, enum refobj_op_type op, aosl_r
 	if (argc > 0) {
 		uintptr_t l;
 
-		argv = alloca (sizeof (uintptr_t) * argc);
+		argv = aosl_alloca (sizeof (uintptr_t) * argc);
 		for (l = 0; l < argc; l++)
 			argv [l] = va_arg (args, uintptr_t);
 	}
@@ -891,7 +880,6 @@ __export_in_so__ int aosl_ref_destroy (aosl_ref_t ref, int do_delete)
 			 * This is also a dead lock case, the running thread holds
 			 * the read lock now, and want to destroy the ref object,
 			 * so just abort here to report the bug.
-			 * -- Lionfore Hao Nov 9th, 2019
 			 **/
 			abort ();
 			err = -AOSL_EDEADLK;
@@ -914,7 +902,6 @@ __export_in_so__ int aosl_ref_destroy (aosl_ref_t ref, int do_delete)
 	 * do not worry because we will check it again after
 	 * we held the lock later if it is not destroyed, and
 	 * nobody could change it back from a destroyed state.
-	 * -- Lionfore Hao Sep 10th, 2019
 	 **/
 	if (!refobj_is_destroyed (robj)) {
 		/**
@@ -927,7 +914,6 @@ __export_in_so__ int aosl_ref_destroy (aosl_ref_t ref, int do_delete)
 		 * freeing operations of all other relative objects
 		 * those may be used in the target running function
 		 * after this function.
-		 * -- Lionfore Hao Apr 8th, 2019
 		 **/
 		__refobj_wrlock_raw (robj);
 		err = refobj_is_destroyed (robj) ? -AOSL_EPERM : 0;
@@ -941,7 +927,6 @@ __export_in_so__ int aosl_ref_destroy (aosl_ref_t ref, int do_delete)
 		/**
 		 * Only put and wait when specifying do delete option,
 		 * otherwise, we just mark it was destroyed.
-		 * -- Lionfore Hao Sep 10th, 2019
 		 **/
 		__refobj_put (robj);
 
@@ -950,14 +935,12 @@ __export_in_so__ int aosl_ref_destroy (aosl_ref_t ref, int do_delete)
 		 * all the objects would be freed in the calling
 		 * thread. But we can only do this if this object
 		 * is not modify_async type.
-		 * -- Lionfore Hao Apr 14th, 2019
 		 **/
 		if (refobj_is_caller_free (robj) && !refobj_is_modify_async (robj)) {
 			/**
 			 * The calling thread might holding the robj
 			 * when invoking the destroy func, so please
 			 * be careful enough to avoid dead loop here.
-			 * -- Lionfore Hao Nov 13th, 2019
 			 **/
 			while (atomic_read (&robj->usage) > 1 + (int)robj_this_thread_get_count)
 				aosl_msleep (1);
@@ -968,7 +951,6 @@ __export_in_so__ int aosl_ref_destroy (aosl_ref_t ref, int do_delete)
 		 * has been destroyed already when do_delete is
 		 * true, because we have a checking in the ref id
 		 * table.
-		 * -- Lionfore Hao Nov 19th, 2019
 		 **/
 		err = 0;
 	}

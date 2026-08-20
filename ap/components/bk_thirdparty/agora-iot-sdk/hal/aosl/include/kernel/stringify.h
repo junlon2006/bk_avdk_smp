@@ -1,10 +1,13 @@
+/***************************************************************************
+ * Module:	stringify
+ *
+ * Copyright © 2025 Agora
+ * This file is part of AOSL, an open source project.
+ * Licensed under the Apache License, Version 2.0, with certain conditions.
+ * Refer to the "LICENSE" file in the root directory for more information.
+ ***************************************************************************/
 #ifndef __KERNEL_STRINGIFY_H__
 #define __KERNEL_STRINGIFY_H__
-
-/* Indirect stringification.  Doing two levels allows the parameter to be a
- * macro itself.  For example, compile with -DFOO=bar, __stringify(FOO)
- * converts to "bar".
- */
 
 #define __stringify_1(x)	#x
 #define __stringify(...)	__stringify_1(__VA_ARGS__)

@@ -34,16 +34,16 @@ intptr_t aosl_hal_atomic_sub(intptr_t i, intptr_t *v)
 
 /*
 bool __atomic_compare_exchange_n(
-    type *ptr,           // 要操作的原子变量指针
-    type *expected,      // 期望值的指针
-    type desired,        // 期望设置的值
-    bool weak,           // 是否为弱比较交换
-    int success_memorder, // 成功时的内存顺序
-    int failure_memorder  // 失败时的内存顺序
+    type *ptr,           // Pointer to the atomic variable
+    type *expected,      // Pointer to the expected value
+    type desired,        // Value to set if comparison succeeds
+    bool weak,           // Whether to use weak comparison exchange
+    int success_memorder, // Memory ordering on success
+    int failure_memorder  // Memory ordering on failure
 );
 return:
-  返回值是布尔值，表示是否成功
-  如果失败，expected 被更新为实际值
+  Returns a boolean value indicating success/failure
+  If failed, 'expected' is updated with the actual value
 */
 intptr_t aosl_hal_atomic_cmpxchg(intptr_t *v, intptr_t old, intptr_t new)
 {
@@ -57,12 +57,12 @@ intptr_t aosl_hal_atomic_cmpxchg(intptr_t *v, intptr_t old, intptr_t new)
 
 /*
 type __atomic_exchange_n(
-    type *ptr,           // 原子变量指针
-    type val,           // 要交换的新值
-    int memorder        // 内存顺序
+    type *ptr,           // Pointer to the atomic variable
+    type val,           // New value to exchange
+    int memorder        // Memory ordering
 );
 return:
-  交换前的原值
+  The original value before the exchange
 */
 intptr_t aosl_hal_atomic_xchg(intptr_t *v, intptr_t new)
 {
