@@ -218,6 +218,10 @@ typedef enum {
   ERR_RTM_EXCEED_MSG_CNT = 1005,
   ERR_RTM_EXCEED_SND_BUFFER = 1006,
   ERR_RTM_CUSTOM_TYPE_OUT_OF_LENGTH = 1007,
+  ERR_RTM_CHANNEL_EXCEED_LIMIT = 1008,
+  ERR_RTM_CHANNEL_ALREADY_JOINED = 1009,
+  ERR_RTM_CHANNEL_NOT_JOINED = 1010,
+  ERR_RTM_CHANNEL_SUBSCRIBE_TIMEOUT = 1011,
 #endif // RTM End
 
 } agora_err_code_e;
@@ -689,15 +693,7 @@ typedef struct {
   audio_codec_option_t audio_codec_opt;
 
 
-  // enable rdt feature
-  bool enable_rdt;
 
-  /**
-   * audio jitter buffer output frame duration in ms.
-   * supported: 20, 40, 60; 0 means use default (20ms)
-   * only valid when enable_audio_jitter_buffer is true
-   */
-  int audio_jitter_frame_duration;
 } rtc_channel_options_t;
 
 
@@ -711,38 +707,6 @@ typedef enum {
   NETWORK_EVENT_UP,
   NETWORK_EVENT_CHANGE,
 } network_event_e;
-
-
-/**
- * Reliable Data Transmission Tunnel message type
- */
-typedef enum rdt_stream_type {
-  RDT_STREAM_CMD,    // Reliable; High priority; Limit 256 bytes per packet, 100 packets per second
-  RDT_STREAM_DATA,   // Reliable; Low priority; Restricted by congestion control; Limit 128K bytes per packet
-  RDT_STREAM_COUNT,
-} rdt_stream_type_e;
-
-/**
- * Reliable Data Transmission tunnel state
- */
-typedef enum rdt_state {
-  RDT_STATE_CLOSED,  // initial or closed
-  RDT_STATE_OPENED,  // opened and can send data
-  RDT_STATE_BLOCKED, // send buffer is full, can't send data, but can send cmd
-  RDT_STATE_PENDING, // reconnecting tunnel, can't send data
-  RDT_STATE_BROKEN,  // rdt tunnel broken, will auto reset and rebuild tunnel
-} rdt_state_e;
-
-/**
- * Reliable Data Transmission tunnel status info
- */
-typedef struct rdt_status_info {
-  uint32_t     conn_id;
-  uint32_t     peer_uid; // peer uid
-  rdt_state_e  state;    // rdt state
-  int send_queue_size[RDT_STREAM_COUNT];  // queue size of waiting for send
-  int recv_queue_size[RDT_STREAM_COUNT];  // queue size of waitting for delivery
-} rdt_status_info_t;
 
 
 /**
@@ -1002,23 +966,6 @@ typedef struct {
    */
   void (*on_media_ctrl_msg)(connection_id_t conn_id, uint32_t uid, const void *payload, size_t length);
 
-  /**
-   * Occur when user rdt state changed
-   * @param[in] conn_id  Connection identification
-   * @param[in] uid      Remote user ID
-   * @param[in] state    Rdt tunnel state
-   */
-  void (*on_rdt_state)(connection_id_t conn_id, uint32_t uid, rdt_state_e state);
-
-  /**
-   * Occur when receive rdt message from uid
-   * @param[in] conn_id  Connection identification
-   * @param[in] uid      Remote user ID
-   * @param[in] type     Rdt message type
-   * @param[in] msg      Rdt message content
-   * @param[in] len      Rdt message length
-   */
-  void (*on_rdt_msg)(connection_id_t conn_id, uint32_t uid, rdt_stream_type_e type, const void *msg, size_t len);
 
   /**
    * Occur when receive a stream message.
@@ -1445,35 +1392,6 @@ extern __agora_api__ int agora_rtc_set_params(connection_id_t conn_id, const cha
 extern __agora_api__ int agora_rtc_send_media_ctrl_msg(connection_id_t conn_id, uint32_t remote_uid,
                                                        const void *payload, size_t length);
 
-/**
- * Send Reliable message to remote uid in channel
- *
- * @param[in] conn_id       Connection identification
- * @param[in] remote_uid    Remote user ID
- * @param[in] type          Reliable Data Transmission tunnel message type
- * @param[in] msg           Message's payload buffer
- * @param[in] length        Message's payload buffer length (cmd: max 256 bytes, data: max 128KB)
- *
- * @return
- * - = 0: Success
- * - < 0: Failure
- */
-extern __agora_api__ int agora_rtc_send_rdt_msg(connection_id_t conn_id, uint32_t remote_uid, rdt_stream_type_e type,
-                                                const void *msg, size_t length);
-
-/**
- * Get rdt tunnel info
- *
- * @param[in] conn_id       Connection identification
- * @param[in] remote_uid    Remote user ID
- * @param[out] info         rdt tunnel status info
- *
- * @return
- * - = 0: Success
- * - < 0: Failure
- */
-extern __agora_api__ int agora_rtc_get_rdt_status_info(connection_id_t conn_id, uint32_t remote_uid, rdt_status_info_t *info);
-
 
 /**
 * Creates a data stream.
@@ -1553,6 +1471,16 @@ typedef enum {
 } rtm_msg_state_e;
 
 /**
+ * RTM message type.
+ */
+typedef enum {
+  /** 0: Binary message. */
+  RTM_MESSAGE_TYPE_BINARY = 0,
+  /** 1: String message. */
+  RTM_MESSAGE_TYPE_STRING = 1,
+} rtm_message_type_e;
+
+/**
  * RTM error code
  */
 typedef enum {
@@ -1602,12 +1530,14 @@ typedef struct {
    * @param[in] rtm_uid    The remote rtm uid which the data come from.
    * @param[in] msg        The Data received.
    * @param[in] msg_len    Length of the data received.
+   * @param[in] msg_type    Type of the message received.
    * @param[in] custom_type Custom type of the data received.
    */
-  void (*on_rtm_data)(const char *rtm_uid, const void *msg, size_t msg_len, const char *custom_type);
+  void (*on_rtm_data)(const char *rtm_uid, const void *msg, size_t msg_len,
+                      rtm_message_type_e msg_type, const char *custom_type);
 
   /**
-   * Report the result of the "agora_rtc_send_rtm_data" method call
+   * Report the result of the "agora_rtm_send_data" method call
    * @param[in] rtm_uid    RTM UID
    * @param[in] msg_id     Identify one message
    * @param[in] error_code Error code number
@@ -1616,6 +1546,34 @@ typedef struct {
    */
   void (*on_rtm_send_data_result)(const char *rtm_uid, uint32_t msg_id, rtm_msg_state_e state);
 
+
+  /**
+   * Reports the result of the "agora_rtm_subscribe" method call.
+   * @param[in] channel_name The subscribed channel name.
+   * @param[in] err_code     The subscription result.
+   */
+  void (*on_rtm_subscribe_result)(const char *channel_name, rtm_err_code_e err_code);
+
+  /**
+   * Occurs when a message is received from a subscribed RTM channel.
+   * @param[in] channel_name The channel from which the message was received.
+   * @param[in] rtm_uid      The RTM user ID of the message sender.
+   * @param[in] msg          The received message data.
+   * @param[in] msg_len      The length of the received data.
+   * @param[in] msg_type     The type of the received message.
+   * @param[in] custom_type  The custom message type, or NULL if not set.
+   */
+  void (*on_rtm_subscribe_data)(const char *channel_name, const char *rtm_uid,
+                                const void *msg, size_t msg_len, rtm_message_type_e msg_type,
+                                const char *custom_type);
+
+  /**
+   * Reports the result of the "agora_rtm_publish" method call.
+   * @param[in] channel_name The channel to which the message was published.
+   * @param[in] msg_id       The application-defined message ID.
+   * @param[in] state        The message send state.
+   */
+  void (*on_rtm_publish_result)(const char *channel_name, uint32_t msg_id, rtm_msg_state_e state);
 } agora_rtm_handler_t;
 
 /**
@@ -1639,8 +1597,8 @@ typedef struct {
  * - = 0: Success
  * - < 0: Failure
  */
-extern __agora_api__ int agora_rtc_login_rtm(const char *rtm_uid, const char *rtm_token,
-                                             const agora_rtm_handler_t *handler);
+extern __agora_api__ int agora_rtm_login(const char *rtm_uid, const char *rtm_token,
+                                         const agora_rtm_handler_t *handler);
 
 /**
  * Logout agora RTM service
@@ -1650,7 +1608,7 @@ extern __agora_api__ int agora_rtc_login_rtm(const char *rtm_uid, const char *rt
  * - < 0: Failure
  */
 
-extern __agora_api__ int agora_rtc_logout_rtm(void);
+extern __agora_api__ int agora_rtm_logout(void);
 
 /**
  * Send data through Real-time Messaging (RTM) mechanism, which is a stable and reliable data channel
@@ -1661,13 +1619,70 @@ extern __agora_api__ int agora_rtc_logout_rtm(void);
  * @param[in] msg     Message to send
  * @param[in] msg_len Length of the message(max size: 31KB)
  * @param[in] msg_id Identify the message sent
+ * @param[in] msg_type Message type. Must be `RTM_MESSAGE_TYPE_BINARY` or
+ *                     `RTM_MESSAGE_TYPE_STRING`.
  * @param[in] custom_type Designed by customer(max length: 32bytes). Only string types are supported.Set as NULL if not need.
  *
  * @return:
  * - = 0: Success
  * - < 0: Failure
  */
-extern __agora_api__ int agora_rtc_send_rtm_data(const char *rtm_uid, const void *msg, size_t msg_len, uint32_t msg_id, const char *custom_type);
+extern __agora_api__ int agora_rtm_send_data(const char *rtm_uid, const void *msg, size_t msg_len,
+                                             uint32_t msg_id, rtm_message_type_e msg_type,
+                                             const char *custom_type);
+
+/**
+ * Subscribes to an RTM channel asynchronously.
+ *
+ * The synchronous return value indicates whether the request was accepted. The
+ * subscription result is reported by `on_rtm_subscribe_result`.
+ *
+ * @param[in] channel_name The channel name to subscribe to.
+ *
+ * @return
+ * - = 0: The subscription request was accepted.
+ * - < 0: Failure.
+ */
+extern __agora_api__ int agora_rtm_subscribe(const char *channel_name);
+
+/**
+ * Unsubscribes from an RTM channel synchronously.
+ *
+ * @param[in] channel_name The channel name to unsubscribe from.
+ *
+ * @return
+ * - = 0: Success.
+ * - < 0: Failure.
+ */
+extern __agora_api__ int agora_rtm_unsubscribe(const char *channel_name);
+
+/**
+ * Publishes a message to an RTM channel.
+ *
+ * Publishing does not require subscribing to the channel. The final send
+ * result is reported by `on_rtm_publish_result`.
+ *
+ * @param[in] channel_name The destination channel name.
+ * @param[in] message      The message data.
+ * @param[in] length       The message length in bytes (maximum 31 KB).
+ * @param[in] msg_id       An application-defined message ID.
+ * @param[in] msg_type     The message type. Must be `RTM_MESSAGE_TYPE_BINARY`
+ *                         or `RTM_MESSAGE_TYPE_STRING`.
+ * @param[in] custom_type  The custom message type (maximum 31 bytes), or NULL.
+ *
+ * @return
+ * - = 0: The publish request was accepted.
+ * - < 0: Failure.
+ */
+extern __agora_api__ int agora_rtm_publish(const char *channel_name, const void *message,
+                                           size_t length, uint32_t msg_id,
+                                           rtm_message_type_e msg_type, const char *custom_type);
+
+#define agora_rtc_login_rtm agora_rtm_login
+#define agora_rtc_logout_rtm agora_rtm_logout
+#define agora_rtc_send_rtm_data(rtm_uid, msg, msg_len, msg_id, custom_type)                 \
+  agora_rtm_send_data((rtm_uid), (msg), (msg_len), (msg_id), RTM_MESSAGE_TYPE_BINARY,      \
+                      (custom_type))
 
 #ifdef __cplusplus
 }
