@@ -1308,7 +1308,7 @@ error:
 }
 #endif
 
-#if CONFIG_COMPONENTS_WFA_CA
+#if CONFIG_WFA_CA
 extern void wfa_ca_start();
 extern void wfa_ca_stop();
 
@@ -1630,14 +1630,16 @@ int cli_netif_event_cb(void *arg, event_module_t event_module,
 
 	switch (event_id) {
 	case EVENT_NETIF_GOT_IP4:
-	case EVENT_NETIF_GOT_IP6:
+	case EVENT_NETIF_GOT_IP6_LL:
+	case EVENT_NETIF_GOT_IP6_GLOBAL:
 		if (wifi_cmd_sema != NULL) {
 			wifi_cmd_status = 1;
 			rtos_set_semaphore(&wifi_cmd_sema);
 		}
 		got_ip = (netif_event_got_ip4_t *)event_data;
-		CLI_LOGI("%s got ip%d\n", got_ip->netif_if == NETIF_IF_STA ? "BK STA" : "unknown netif",
-			event_id== EVENT_NETIF_GOT_IP4 ? 4 : 6);
+		CLI_LOGI("%s got ip%s\n", got_ip->netif_if == NETIF_IF_STA ? "BK STA" : "unknown netif",
+			event_id == EVENT_NETIF_GOT_IP4 ? "4" :
+			(event_id == EVENT_NETIF_GOT_IP6_LL ? "6-ll" : "6-global"));
 		break;
 	default:
 		CLI_LOGD("rx event <%d %d>\n", event_module, event_id);
@@ -2668,7 +2670,7 @@ static const struct cli_command s_wifi_commands[] = {
 	{"twt", "twt {setup|teardown}", cli_wifi_twt_cmd},
 #endif
 
-#if CONFIG_COMPONENTS_WFA_CA
+#if CONFIG_WFA_CA
 	{"wfa_ca", "wfa_ca <start|stop>", cli_wifi_wfa_ca_cmd},
 #endif
 

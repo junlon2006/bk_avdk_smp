@@ -556,7 +556,15 @@ static void usb_hc_riscv_ipi_cb(ipi_core_id_t core_id, uint32_t value,
         return;
     }
 #endif
+#if CONFIG_USB_HOST
+    /* Host poll loop lives further down in this file. In a pure device build
+     * (CONFIG_USB_HOST=n) this whole call is compiled out so the RISC-V device
+     * path never forces the host controller code to be linked -- everything
+     * host-only here is then dropped by --gc-sections. Verified: without this
+     * guard the pure-device link fails with undefined `usbh_hub_thread_wakeup'
+     * / `g_usbhost_bus'. */
     usb_hc_riscv_poll_events();
+#endif
 }
 #endif
 
@@ -646,7 +654,9 @@ static void usb_hc_riscv_probe_init(uint32_t role)
 
 #if CONFIG_IPI
 /* Non-static: the device port calls this to register the shared IPI_DOMAIN_USB
- * callback when it brings up the RISC-V device firmware. */
+ * callback when it brings up the RISC-V device firmware. Reachable from the
+ * device dcd, so it (and the callback above) survive --gc-sections even in a
+ * pure device build where the rest of this host file is dropped. */
 bk_err_t usb_hc_riscv_ipi_enable(void)
 {
     bk_err_t ret;
@@ -1028,7 +1038,12 @@ void musb_intr_pipe_init(struct musb_pipe *pipe, uint8_t *buffer, uint32_t bufle
     musb_set_active_ep(old_ep_index);
 }
 
-/* Low-level helpers used by CherryUSB/driver/usb_driver.c. */
+/* Low-level helpers used by CherryUSB/driver/usb_driver.c.
+ * usb_driver.c is always compiled (CONFIG_USB), including in a pure device
+ * build (CONFIG_USB_DEVICE=y + CONFIG_USB_HOST=n). To keep these definitions
+ * reachable in that case, this whole file is compiled whenever CONFIG_USB_HOST
+ * OR CONFIG_USB_DEVICE is set (see CMakeLists.txt); the host-controller code
+ * around them is unreachable in a device build and dropped by --gc-sections. */
 #define M55_CLK_EN_REG  (SOC_SYS_AHBP_REG_BASE + 0x0A * 4)
 
 void usb_clk_config(uint8_t en)
@@ -1269,6 +1284,41 @@ int usb_hc_mhdrc_register_init(void)
     return 0;
 }
 
+int usb_hc_mhdrc_register_deinit(void)
+{
+    /* Symmetric teardown of usb_hc_mhdrc_register_init(): return every register
+     * that init programmed back to its uninitialised (cleared) state, so a
+     * host->device switch leaves no stale host bring-up state in the shared
+     * MUSB core. Each write is the exact inverse of an init write above. */
+
+    /* Disable the USB + endpoint interrupts init enabled. */
+    HWREGB(USB_BASE + MUSB_IE_OFFSET)   = 0;
+    HWREGB(USB_BASE + MUSB_TXIE_OFFSET) = 0;
+    HWREGB(USB_BASE + MUSB_RXIE_OFFSET) = 0;
+
+    /* Release the dynamic FIFO allocation init set up for EP0 + every pipe. */
+    musb_set_active_ep(0);
+    HWREGB(USB_BASE + MUSB_IND_TXINTERVAL_OFFSET) = 0;
+    for (uint8_t i = 0; i < CONIFG_USB_MUSB_PIPE_NUM; i++) {
+        musb_set_active_ep(i);
+        HWREGB(USB_BASE + MUSB_TXFIFOSZ_OFFSET)  = 0;
+        HWREGH(USB_BASE + MUSB_TXFIFOADD_OFFSET) = 0;
+        HWREGB(USB_BASE + MUSB_RXFIFOSZ_OFFSET)  = 0;
+        HWREGH(USB_BASE + MUSB_RXFIFOADD_OFFSET) = 0;
+    }
+    musb_set_active_ep(0);
+
+    /* Undo POWER.HSENAB (init forced HS advertise on). */
+    HWREGB(USB_BASE + MUSB_POWER_OFFSET) &= ~USB_POWER_HSENAB;
+
+    /* #9196: relinquish the OTG session host bring-up started (SESSION set in
+     * usb_hc_mhdrc_register_init). A stale SESSION makes the next device
+     * bring-up's "DEVCTL |= SESSION" a no-op, so the OTG FSM never re-samples the
+     * role and the core stays an A-device. */
+    HWREGB(USB_BASE + MUSB_DEVCTL_OFFSET) &= ~USB_DEVCTL_SESSION;
+    return 0;
+}
+
 void usb_hc_mhdrc_set_testmode_register(uint8_t value)
 {
     HWREGB(USB_BASE + MUSB_TESTMODE_OFFSET) = value;
@@ -1342,6 +1392,7 @@ __WEAK void usb_hc_low_level_deinit(struct usbh_bus *bus)
 
 int usb_hc_deinit(struct usbh_bus *bus)
 {
+    usb_hc_mhdrc_register_deinit();
     usb_hc_low_level_deinit(bus);
 
     struct musb_pipe_waitsem pipe_waitsem_pool[CONFIG_USBHOST_PIPE_NUM];

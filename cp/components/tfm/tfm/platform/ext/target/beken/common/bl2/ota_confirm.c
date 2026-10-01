@@ -17,8 +17,7 @@
  * source, mirroring boot_param_ops.c, so BL2 and the SPE confirm path cannot
  * drift. Uses only flash primitives that exist in both worlds (bk_flash_*,
  * bk_flash_erase_sector, line-mode); erase is deliberately bk_flash_erase_sector
- * (not the BL2-only flash_area_erase_fast). The BL2-only re-arm helper, which
- * needs the MCUboot IMAGE_MAGIC, is guarded out of the SPE build below. */
+ * (not the BL2-only flash_area_erase_fast). */
 
 /* partitions_gen.h -> _ota.h: CONFIG_OTA_CONFIRM_UPDATE, OVERWRITE_CONFIRM and
  * CONFIG_PRIMARY_ALL_PHY_PARTITION_OFFSET. Kept outside the guard so the whole
@@ -38,9 +37,6 @@
  * are extern'd (like boot_param_ops.c) to avoid pulling BL2-only headers into
  * the SPE build. bk_flash_read_bytes/write_bytes come from <driver/flash.h>. */
 extern bk_err_t bk_flash_erase_sector(uint32_t address);
-extern void bk_flash_min_unprotect_once(void);
-extern void bk_flash_min_switch_line_mode_two(void);
-extern void bk_flash_min_restore_line_mode(void);
 
 /* Logging: only BL2 (MCUboot) has BOOT_LOG; the SDK log path is unsafe from the
  * SPE, so the shared build logs nothing there (matches boot_param_ops.c). */
@@ -129,12 +125,11 @@ int bk_boot_write_ota_confirm(uint32_t value)
      * sector (never the first, which holds the resume journal) before writing. */
     sector = phy_off & ~(OTA_CTRL_SECTOR_SIZE - 1u);
 
-    /* BK7259SW-2937 defers unprotect out of flash init. The anti-brick re-arm
+    /* BK7259SW-2937 defers unprotect out of flash init; the anti-brick re-arm
      * path (primary wiped, confirm missing) reaches here WITHOUT having run
-     * boot_copy_region first, so we must unprotect ourselves; otherwise
-     * erase/program are ignored and verify fails with magic still 0xFFFFFFFF. */
-    bk_flash_min_unprotect_once();
-    bk_flash_min_switch_line_mode_two();
+     * boot_copy_region first. Nothing to set up: bk_flash_erase_sector /
+     * bk_flash_write_bytes each self-bracket line mode (two-line) and protection
+     * (unprotect -> op -> re-protect), and the readback works in four-line. */
     while (retry--) {
         struct ota_confirm_rec check = {0};
 
@@ -143,12 +138,10 @@ int bk_boot_write_ota_confirm(uint32_t value)
         bk_flash_read_bytes(phy_off, (uint8_t *)&check, sizeof(check));
         if (check.magic == rec.magic && check.confirm == rec.confirm &&
             check.crc == rec.crc) {
-            bk_flash_min_restore_line_mode();
             OTA_CONFIRM_INF("set ota confirm=%#x", value);
             return BK_OK;
         }
     }
-    bk_flash_min_restore_line_mode();
     OTA_CONFIRM_ERR("set ota confirm=%#x fail", value);
     return BK_FAIL;
 }
@@ -156,44 +149,66 @@ int bk_boot_write_ota_confirm(uint32_t value)
 void bk_ota_confirm_clear_if_armed(void)
 {
     uint32_t phy_off = bk_boot_overwrite_confirm_off();
-    uint32_t sector;
+    uint32_t confirm_sector;
+    uint32_t journal_sector;
 
     if (phy_off == 0 || phy_off < CONFIG_PRIMARY_ALL_PHY_PARTITION_OFFSET) {
         return;
     }
-    /* Clear only after a real install (armed record present); skip on a normal
-     * boot so we neither wear the sector nor touch flash needlessly. */
     if (!bk_boot_read_ota_confirm(OVERWRITE_CONFIRM)) {
         return;
     }
-    sector = phy_off & ~(OTA_CTRL_SECTOR_SIZE - 1u);
+    confirm_sector = phy_off & ~(OTA_CTRL_SECTOR_SIZE - 1u);
+    journal_sector = partition_get_phy_offset(PARTITION_OTA_CONTROL)
+		     & ~(OTA_CTRL_SECTOR_SIZE - 1u);
 
-    bk_flash_min_unprotect_once();
-    bk_flash_min_switch_line_mode_two();
-    bk_flash_erase_sector(sector);
-    bk_flash_min_restore_line_mode();
+    /* bk_flash_erase_sector self-brackets line mode + protection per-op.
+     * Journal first: a crash after this erase with confirm still armed just
+     * reinstalls from block 0. Confirm last so an idle device has neither flag. */
+    if (journal_sector != 0 && journal_sector != confirm_sector) {
+        bk_flash_erase_sector(journal_sector);
+    }
+    bk_flash_erase_sector(confirm_sector);
 }
 
-/* Anti-brick re-arm needs the MCUboot image magic, which only exists in the BL2
- * build. Guard the whole helper out of the SPE build (which never calls it). */
-#if defined(CONFIG_ENABLE_MCUBOOT_BL2)
-#include "bootutil/image.h"
-
-void bk_boot_rearm_ota_confirm_if_valid(void)
+bool bk_ota_resume_journal_dirty(void)
 {
-    uint32_t ota_off = partition_get_phy_offset(PARTITION_OTA);
-    uint32_t ota_magic = 0;
+    uint32_t phy_off = bk_boot_overwrite_confirm_off();
+    uint32_t journal_sector;
+    uint8_t first = 0xFFu;
 
-    if (ota_off != 0 &&
-        bk_flash_read_bytes(ota_off, (uint8_t *)&ota_magic, sizeof(ota_magic)) == BK_OK &&
-        ota_magic == IMAGE_MAGIC) {
-        OTA_CONFIRM_ERR("APP invalid, re-arm compressed-overwrite install");
-        bk_boot_write_ota_confirm(OVERWRITE_CONFIRM);
-    } else {
-        OTA_CONFIRM_ERR("APP invalid, ota staging has no valid image (magic=%#x), skip re-arm",
-                        (unsigned int)ota_magic);
+    if (phy_off == 0 || phy_off < CONFIG_PRIMARY_ALL_PHY_PARTITION_OFFSET) {
+        return false;
+    }
+    journal_sector = partition_get_phy_offset(PARTITION_OTA_CONTROL)
+		     & ~(OTA_CTRL_SECTOR_SIZE - 1u);
+    if (journal_sector == 0 ||
+        journal_sector == (phy_off & ~(OTA_CTRL_SECTOR_SIZE - 1u))) {
+        return false;
+    }
+    /* Record 0 leads with its index byte; 0xFF means no block was committed
+     * yet (the same test read_resume_block() uses to find the journal end). */
+    bk_flash_read_bytes(journal_sector, &first, sizeof(first));
+    return (first != 0xFFu);
+}
+
+void bk_ota_clear_resume_journal(void)
+{
+    uint32_t phy_off = bk_boot_overwrite_confirm_off();
+    uint32_t journal_sector;
+    uint32_t confirm_sector;
+
+    if (phy_off == 0 || phy_off < CONFIG_PRIMARY_ALL_PHY_PARTITION_OFFSET) {
+        return;
+    }
+    journal_sector = partition_get_phy_offset(PARTITION_OTA_CONTROL)
+		     & ~(OTA_CTRL_SECTOR_SIZE - 1u);
+    confirm_sector = phy_off & ~(OTA_CTRL_SECTOR_SIZE - 1u);
+    /* Never erase the confirm sector here — keep OVERWRITE_CONFIRM armed. */
+    if (journal_sector != 0 && journal_sector != confirm_sector) {
+        bk_flash_erase_sector(journal_sector);
+        OTA_CONFIRM_FORCE("cleared resume journal (confirm kept)");
     }
 }
-#endif /* CONFIG_ENABLE_MCUBOOT_BL2 */
 
 #endif /* CONFIG_OTA_CONFIRM_UPDATE */

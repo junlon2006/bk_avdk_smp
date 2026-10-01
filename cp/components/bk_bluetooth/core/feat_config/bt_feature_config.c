@@ -30,9 +30,16 @@ int bk_bt_feature_init(void)
     s_bt_feature_struct._support_lpo_rosc = 1;
 #endif
     s_bt_feature_struct._ble_coc_local_cid_monotonous_increase = 1;
+#if CONFIG_BLUETOOTH_HCI_HOST_FLOW_CONTROL
+    s_bt_feature_struct._hci_host_flow_control_enable = 1;
+#endif
 
 #if CONFIG_BLE_LV_SUPPORT
     s_bt_feature_struct._support_lowpower_sleep = 1;
+#endif
+
+#if CONFIG_BLUETOOTH_BT_RF_HIGHEST_PRIORITY
+    s_bt_feature_struct._bt_rf_highest_priority = 1;
 #endif
 
     extern bool ate_is_enabled(void);

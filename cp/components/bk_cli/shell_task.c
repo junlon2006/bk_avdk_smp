@@ -393,7 +393,12 @@ static inline uint32_t shell_task_enter_critical()
 	uint32_t flags = rtos_disable_int();
 
 #if CONFIG_SOC_SMP
-	spin_lock(&shell_spin_lock);
+	/* In exception context the peer core has already been stopped and local
+	 * interrupts are off, so there is nothing left to serialise against. Taking
+	 * the lock would instead hang the dump: a peer stopped while holding it can
+	 * never release it and spinlock_take() has no timeout. */
+	if(!arch_is_enter_exception())
+		spin_lock(&shell_spin_lock);
 #endif // CONFIG_SOC_SMP
 
 	return flags;
@@ -402,7 +407,8 @@ static inline uint32_t shell_task_enter_critical()
 static inline void shell_task_exit_critical(uint32_t flags)
 {
 #if CONFIG_SOC_SMP
-	spin_unlock(&shell_spin_lock);
+	if(!arch_is_enter_exception())
+		spin_unlock(&shell_spin_lock);
 #endif // CONFIG_SOC_SMP
 
 	rtos_enable_int(flags);
@@ -1102,7 +1108,7 @@ static void tx_req_process(void)
 
 	if(log_busy_queue.free_cnt == 0)
 		return;
-	
+
 	tx_ready = 0;
 
 	log_dev->dev_drv->io_ctrl(log_dev, SHELL_IO_CTRL_GET_STATUS, &tx_ready);
@@ -1175,7 +1181,7 @@ static void tx_req_process(void)
 				shell_assert_out(bTRUE, "xFATAL: in Tx_req id=%x\r\n", blk_id);
 		}
 	}
-	else if (queue_id == SHELL_DYM_QUEUE_ID) 
+	else if (queue_id == SHELL_DYM_QUEUE_ID)
 	{
 		dynamic_log_node *node = dynamic_list_switch();
 		if (node != NULL) {
@@ -1933,7 +1939,7 @@ void reset_forward_log_status(void)
 	ipc_fwd_data.rsp_buf.tag = INVALID_LOG_TAG;
 	ipc_fwd_data.ind_buf.tag = INVALID_LOG_TAG;
 	ipc_fwd_data.common_log_buf.tag = INVALID_LOG_TAG;
-	
+
 	shell_task_exit_critical(int_mask);
 }
 #endif
@@ -1944,7 +1950,7 @@ static void log_handle_task( void *para )
 	while(bTRUE)
 	{
 		Events = wait_any_event(&shell_log_event, BEKEN_WAIT_FOREVER);
-		
+
 		if(Events & SHELL_EVENT_DYM_FREE)
 		{
 			check_and_free_dynamic_node();
@@ -2100,7 +2106,7 @@ static int shell_log_raw_data_internel(bool hint, const u8 *data, u16 data_len)
 
 	if (NULL == packet_buf)
 	{
-		if (hint == 0) 
+		if (hint == 0)
 			return 0;
 
 		if (s_block_mode & LOG_BLOCK_MASK) {
@@ -2582,10 +2588,10 @@ int shell_cmd_forward(char *cmd, u16 cmd_len)
 	    u32  int_mask = shell_task_enter_critical();
 	    ret_code = ipc_dev->dev_drv->write_cmd(ipc_dev, &mb_cmd_buf);
 	    shell_task_exit_critical(int_mask);
-	    
+
 	    if(ret_code != 0)
 	        break;
-	        
+
 	    rtos_delay_milliseconds(10);
 	    try_cnt++;
 	    if(try_cnt < 4)
@@ -2667,6 +2673,51 @@ int shell_get_log_statist(u32 * info_list, u32 num)
 	}
 
 	return cnt;
+}
+
+typedef struct {
+	shell_log_flush_continue_t should_continue;
+	void *context;
+} shell_log_flush_context_t;
+
+static bool_t shell_log_flush_continue(void *context)
+{
+	shell_log_flush_context_t *flush_context =
+		(shell_log_flush_context_t *)context;
+
+	return flush_context->should_continue(flush_context->context)
+		? bTRUE : bFALSE;
+}
+
+/* Bounded variant of shell_log_flush(): should_continue() is polled inside the
+ * device flush loop, so an exception-context flush cannot wait forever on a
+ * device that never drains. On abandonment the pending log is dropped via
+ * TX_RESET so subsequent synchronous dump output is not blocked behind it. */
+bool shell_log_flush_controlled(
+	shell_log_flush_continue_t should_continue, void *context)
+{
+	u32 int_mask;
+	bool_t flushed;
+	shell_log_flush_context_t flush_context = {
+		.should_continue = should_continue,
+		.context = context,
+	};
+	shell_flush_control_t control = {
+		.should_continue = shell_log_flush_continue,
+		.context = &flush_context,
+	};
+
+	if(should_continue == NULL)
+		return false;
+
+	int_mask = rtos_disable_int();
+	flushed = log_dev->dev_drv->io_ctrl(
+		log_dev, SHELL_IO_CTRL_FLUSH_CONTROLLED, &control);
+	if(flushed == bFALSE)
+		log_dev->dev_drv->io_ctrl(log_dev, SHELL_IO_CTRL_TX_RESET, NULL);
+	rtos_enable_int(int_mask);
+
+	return flushed == bTRUE;
 }
 
 void shell_log_flush(void)
@@ -2843,12 +2894,34 @@ static void dynamic_node_gc(void)
 	shell_task_exit_critical(int_mask);
 	node = free_list;
 	while (node != NULL) {
+		uint32_t node_len = node->len;
+		uint32_t payload_len = 0;
+
+		if (node_len >= DYM_NODE_SIZE) {
+			payload_len = node_len - DYM_NODE_SIZE;
+		}
+
+		if ((node_len < DYM_NODE_SIZE) || (payload_len > CONFIG_DYM_LOG_MEM_MAX)) {
+			shell_assert_out(bTRUE, "DYM_BAD:node=%p,next=%p,len=%x,crc=%x\r\n",
+				node, node->next, node->len,
 #if LOG_CRC_CHECK
-		uint32_t crc = log_crc16(node->ptr, node->len - DYM_NODE_SIZE);
+				node->crc16
+#else
+				0
+#endif
+				);
+			node = node->next;
+			/* The node header is already corrupted. Do not LOG_FREE() it:
+			 * heap_4 will assert if this is no longer a valid allocated block. */
+			s_dynamic_log_num_in_mem--;
+			continue;
+		}
+#if LOG_CRC_CHECK
+		uint32_t crc = log_crc16(node->ptr, payload_len);
 		BK_ASSERT(crc == node->crc16);
 #endif
 		temp_node = node;
-		s_dynamic_log_total_len -= node->len;
+		s_dynamic_log_total_len -= node_len;
 		node = node->next;
 		LOG_FREE(temp_node);
 		s_dynamic_log_num_in_mem--;

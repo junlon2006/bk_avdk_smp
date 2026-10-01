@@ -42,7 +42,7 @@
 #define PM_AP_VDDDIG_REG_VALUE_TO_VOLT(value) ((value) * 0.025f + 0.7f)
 #define PM_CLKDV_CPU1_1                     (0x1)
 #define PM_CLKDV_CPU0_0                     (0x0)
-#define SYS_SWITCH_VDDDIG_VOL_DELAY_TIME    (2600)
+#define SYS_SWITCH_VDDDIG_VOL_DELAY_TIME    (10)
 
 #define SYS_PM_HAL_CPU_BARRIER()             do { \
 	__asm__ volatile ("dsb");                     \
@@ -484,7 +484,7 @@ bk_err_t sys_hal_ctrl_vdddig_h_vol(uint32_t vol_value)
 	for(next_vol = cur_vol + 1; next_vol <= vol_value; next_vol++)
 	{
 		sys_ll_set_ana_reg16_vcorehssel(next_vol);
-		sys_hal_delay(SYS_SWITCH_VDDDIG_VOL_DELAY_TIME);
+		bk_delay_us(SYS_SWITCH_VDDDIG_VOL_DELAY_TIME);
 	}
 	sys_ll_set_ana_reg10_spi_latch1v(0);
 
@@ -2428,7 +2428,14 @@ __IRAM_SEC void sys_hal_set_sys2flsh_2wire(uint32_t value)
 #ifdef CONFIG_ETH
 void sys_hal_enable_eth_int(uint32_t value)
 {
-	return;
+	/* Route the ENET interrupt to the core running the driver. bk_int_isr_register()
+	   only fills the NVIC vector; without this the SoC aggregator never forwards
+	   IRQ 14, so the handler never runs and DMACSR keeps its stale TI/RI flags. */
+#if CONFIG_SOC_SMP
+	sys_hal_set_int_en(CPU2_CORE_ID, INT_SRC_INET0, value ? 1 : 0);
+#else
+	sys_hal_set_int_en(rtos_get_core_id(), INT_SRC_INET0, value ? 1 : 0);
+#endif
 }
 
 void sys_hal_set_eth_clk_en(uint32_t value)

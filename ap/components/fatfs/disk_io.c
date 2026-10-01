@@ -155,6 +155,14 @@ static void sdcard_operation_err_reset()
 /*-----------------------------------------------------------------------*/
 /* Get Drive Status                                                      */
 /*-----------------------------------------------------------------------*/
+#if (defined CONFIG_FATFS_QSPI_0_FLASH || defined CONFIG_FATFS_QSPI_1_FLASH) && !(defined CONFIG_QSPI_NAND_FLASH)
+/* QSPI NOR linear path has no FTL to query init state; track it here so
+ * disk_status can report ready. Otherwise disk_status always returns
+ * STA_NOINIT, which makes FatFs re-init on every access and fails f_read/
+ * f_write with FR_INVALID_OBJECT. Index by (pdrv - DEV_QSPI_0_FLASH). */
+static bool s_qspi_nor_disk_inited[2];
+#endif
+
 DSTATUS disk_status (
 	BYTE pdrv		/* Physical drive nmuber to identify the drive */
 )
@@ -186,6 +194,17 @@ DSTATUS disk_status (
 #endif
 		stat = bk_nand_ftl_is_inited(QSPI_ID_0 + (pdrv - DEV_QSPI_0_FLASH)) ? 0 : STA_NOINIT;
 		return stat;
+#endif
+
+#if (defined CONFIG_FATFS_QSPI_0_FLASH) && !(defined CONFIG_QSPI_NAND_FLASH)
+	case DEV_QSPI_0_FLASH:
+#endif
+#if (defined CONFIG_FATFS_QSPI_1_FLASH) && !(defined CONFIG_QSPI_NAND_FLASH)
+	case DEV_QSPI_1_FLASH:
+#endif
+#if (defined CONFIG_FATFS_QSPI_0_FLASH || defined CONFIG_FATFS_QSPI_1_FLASH) && !(defined CONFIG_QSPI_NAND_FLASH)
+		/* NOR linear path: ready once disk_initialize has run. */
+		return s_qspi_nor_disk_inited[pdrv - DEV_QSPI_0_FLASH] ? 0 : STA_NOINIT;
 #endif
 
 	default:
@@ -286,10 +305,21 @@ DSTATUS disk_initialize (
 		else
 			stat = RES_OK;
 #else
-		if(bk_qspi_flash_init(QSPI_ID_0 + (pdrv-DEV_QSPI_0_FLASH)))
-			stat = RES_ERROR;	
+		/* NOR linear path: clear the ready flag first so a re-init (or a retry
+		 * after a previous success) starts from a known state, then bring up the
+		 * QSPI controller driver before the flash (mirrors lfs_qspi_flashbd_init).
+		 * Without the controller init the flash init runs on an uninitialised HAL
+		 * and Read-ID returns garbage. */
+		s_qspi_nor_disk_inited[pdrv - DEV_QSPI_0_FLASH] = false;
+		if(bk_qspi_driver_init())
+			stat = RES_ERROR;
+		else if(bk_qspi_flash_init(QSPI_ID_0 + (pdrv-DEV_QSPI_0_FLASH)))
+			stat = RES_ERROR;
 		else
+		{
+			s_qspi_nor_disk_inited[pdrv - DEV_QSPI_0_FLASH] = true;
 			stat = RES_OK;
+		}
 #endif
 		return stat;
 #endif
@@ -331,14 +361,29 @@ DRESULT disk_read (
 		sdcard_operation_timing_reload();
 
 		result = bk_sd_card_read_blocks((uint8_t *)buff, sector, count);
+		if(result != BK_OK && !bk_sd_card_is_present()) {
+			/* Card physically removed: the heavy deinit/reinit reset loop below
+			 * would only burn several seconds of doomed retries. Fail fast so
+			 * f_unmount returns quickly and the next mount is not blocked. */
+			FATFS_LOGW("func %s line %d, card absent, skip reset loop\r\n", __func__, __LINE__);
+			return RES_ERROR;
+		}
 		if(result != BK_OK) {
 			FATFS_LOGW("func %s line %d,  bk_sd_card_read_blocks result:%d, do reset\r\n", __func__, __LINE__, result);
 			for(uint32_t i = 0; i < SDCARD_READ_FAIL_RETRY_CNT; i++) {
+				if (!bk_sd_card_is_present()) {
+					FATFS_LOGW("%s card absent, abort reset retries\r\n", __func__);
+					break;
+				}
 				FATFS_LOGW("%s retry count:%d\r\n", __func__, i);
 				sdcard_operation_err_reset();
 				result = bk_sd_card_read_blocks((uint8_t *)buff, sector, count);
 				if(result != RES_OK) {
 					FATFS_LOGW("%s ERROR result:%d\r\n", __func__, result);
+					if (!bk_sd_card_is_present()) {
+						FATFS_LOGW("%s card removed during retry\r\n", __func__);
+						break;
+					}
 				}
 				else
 					break;
@@ -469,12 +514,27 @@ DRESULT disk_write (
 		sdcard_operation_timing_reload();
 
 		result = bk_sd_card_write_blocks((uint8_t *)buff, sector, count);
+		if(result != BK_OK && !bk_sd_card_is_present()) {
+			/* Surprise removal during an in-flight write. Reinitializing an
+			 * absent medium races the hot-plug unmount path and leaves the
+			 * driver marked initialized without a usable card. */
+			FATFS_LOGW("func %s line %d, card absent, skip reset loop\r\n", __func__, __LINE__);
+			return RES_ERROR;
+		}
 		if(result != BK_OK) {
 			for(uint32_t i = 0; i < SDCARD_WRITE_FAIL_RETRY_CNT; i++) {
+				if (!bk_sd_card_is_present()) {
+					FATFS_LOGW("%s card absent, abort reset retries\r\n", __func__);
+					break;
+				}
 				sdcard_operation_err_reset();
 
 				result = bk_sd_card_write_blocks((uint8_t *)buff, sector, count);
 				if(result != RES_OK) {
+					if (!bk_sd_card_is_present()) {
+						FATFS_LOGW("%s card removed during retry\r\n", __func__);
+						break;
+					}
 					FATFS_LOGD("Check the remaining space!\r\n");
 					FATFS_LOGD("Get the value of the remaining space. res: %d\r\n", sd_disk_check_space_size());
 				}
@@ -845,9 +905,14 @@ DSTATUS disk_uninitialize ( BYTE pdrv/* Physical drive nmuber to identify the dr
 		stat = RES_OK;
 #else
 		if(bk_qspi_flash_deinit(QSPI_ID_0 + (pdrv-DEV_QSPI_0_FLASH)))
-			stat = RES_ERROR;	
+			stat = RES_ERROR;
 		else
+		{
+			/* NOR linear path: drop the ready flag so disk_status reports
+			 * STA_NOINIT until the drive is initialised again (hot-plug safe). */
+			s_qspi_nor_disk_inited[pdrv - DEV_QSPI_0_FLASH] = false;
 			stat = RES_OK;
+		}
 #endif
 		return stat;
 #endif

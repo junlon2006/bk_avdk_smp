@@ -69,18 +69,18 @@ if (CONFIG_TFM AND tfm_present)
     # The NS-side PSA crypto interface (tfm_crypto_api.c) is a *client*: the PSA
     # multipart operation structs (psa/crypto_struct.h) only expose the IPC
     # `.handle` member when MBEDTLS_PSA_CRYPTO_CLIENT is defined and the full
-    # server (MBEDTLS_PSA_CRYPTO_C) is NOT. The default mbedtls-3.6.0
+    # server (MBEDTLS_PSA_CRYPTO_C) is NOT. The default mbedtls-3.6.6
     # mbedtls_config.h enables MBEDTLS_PSA_CRYPTO_C, which is wrong for the NS
     # client. Point the NS interface at TF-M's profile_medium *client* mbedcrypto
     # config (MBEDTLS_PSA_CRYPTO_CLIENT set, MBEDTLS_PSA_CRYPTO_C unset).
     target_compile_definitions(${COMPONENT_LIB} PRIVATE
         MBEDTLS_CONFIG_FILE="tfm_mbedcrypto_config_profile_medium_client.h"
     )
-    # Keep TF-M's own mbedtls-3.6.0 tree private to this component only.
+    # Keep TF-M's own mbedtls-3.6.6 tree private to this component only.
     target_include_directories(${COMPONENT_LIB} PRIVATE
         ${COMPONENT_DIR}/tfm/secure_fw/include
         ${COMPONENT_DIR}/tfm/config
-        ${COMPONENT_DIR}/mbedtls-3.6.0/include
+        ${COMPONENT_DIR}/mbedtls-3.6.6/include
         ${COMPONENT_DIR}/tfm/lib/ext/mbedcrypto/mbedcrypto_config
     )
 endif()
@@ -149,6 +149,16 @@ if (CONFIG_TFM AND tfm_present)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 ${_partitions_src_dir}/_mpc.h
                 ${partition_hdr_dir}/_mpc.h
+            # Stage the generated OTP map (otp_map_1/otp_map_2 with per-item
+            # security). Only _otp.h/_otp.c are staged so the sibling generated
+            # tfm_hal_ppc.h does not shadow the BK7259 stub no-op. otp_s.c
+            # embeds _otp.c; bk_tfm_mpc.c / provisioning.c include _otp.h.
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${_partitions_src_dir}/_otp.h
+                ${partition_hdr_dir}/_otp.h
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${_partitions_src_dir}/_otp.c
+                ${partition_hdr_dir}/_otp.c
             # Do not DEPENDS on generated headers by path: after clean they are
             # missing and ninja has no rule for them. Order via generated_files.
             DEPENDS ${_stub_partitions_h}
@@ -166,6 +176,16 @@ if (CONFIG_TFM AND tfm_present)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 ${_stub_partitions_h}
                 ${partition_hdr_dir}/partitions.h
+            # Stage the generated OTP map (otp_map_1/otp_map_2 with per-item
+            # security). Only _otp.h/_otp.c are staged so the sibling generated
+            # tfm_hal_ppc.h does not shadow the BK7259 stub no-op. otp_s.c
+            # embeds _otp.c; bk_tfm_mpc.c / provisioning.c include _otp.h.
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${_partitions_src_dir}/_otp.h
+                ${partition_hdr_dir}/_otp.h
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${_partitions_src_dir}/_otp.c
+                ${partition_hdr_dir}/_otp.c
             # Do not DEPENDS on generated headers by path: after clean they are
             # missing and ninja has no rule for them. Order via generated_files.
             DEPENDS ${_stub_partitions_h}
@@ -227,15 +247,15 @@ if (CONFIG_TFM AND tfm_present)
     # External libraries referenced by local path (no network fetch).
     # Mirrors psa_level3 run.sh: MCUBOOT/MBEDCRYPTO/QCBOR/CMSIS + IDK/ROOT.
     #   MCUboot   : imported alongside TF-M under this component
-    #   Mbedcrypto: TF-M needs a COMPLETE Mbed TLS tree (with framework/).
-    #     The SDK psa_mbedtls/mbedtls (3.6.6) is a trimmed copy without
-    #     framework/, so TF-M's full build fails on it. Use the complete
-    #     mbedtls-3.6.0 imported from psa_level3 for the Secure world.
-    #     (NS world keeps using the SDK psa_mbedtls 3.6.6 separately.)
+    #   Mbedcrypto: TF-M needs a COMPLETE Mbed TLS tree (with framework/), so
+    #     the Secure world keeps its own 3.6.6 tree: SDK sources + framework/,
+    #     with the TF-M mbedcrypto patches (lib/ext/mbedcrypto/*.patch) and the
+    #     trustengine hooks (bignum.h ACA, cipher_wrap.h key ladder) applied.
+    #     Same version as the NS world, so both link one Mbed TLS API.
     #   QCBOR/CMSIS: copied from psa_level3 into this component
     #   IDK/ROOT  : SDK cp tree (drivers/soc/include) = ARMINO_SDK_PATH
     set(tfm_mcuboot_path ${COMPONENT_DIR}/mcuboot)
-    set(tfm_mbedcrypto_path ${COMPONENT_DIR}/mbedtls-3.6.0)
+    set(tfm_mbedcrypto_path ${COMPONENT_DIR}/mbedtls-3.6.6)
     set(tfm_qcbor_path ${COMPONENT_DIR}/QCBOR-1.2)
     set(tfm_cmsis_path ${COMPONENT_DIR}/CMSIS_6)
     set(tfm_idk_path ${armino_path})
@@ -248,14 +268,15 @@ if (CONFIG_TFM AND tfm_present)
         CONFIGURE_COMMAND ""
         BUILD_IN_SOURCE 1
         BUILD_COMMAND
-            cmake -G Ninja -B ${tfm_build_dir}
+            ${CMAKE_COMMAND} -G Ninja -S ${tfm_src_dir} -B ${tfm_build_dir}
                 -DCMAKE_PREFIX_PATH=${tfm_toolchain_path}
                 -DCMAKE_INSTALL_PREFIX=${tfm_install_dir}
                 -DARMINO_SDK_PATH=${armino_path}
                 -DTFM_PLATFORM=${tfm_platform}
-                -DTFM_TOOLCHAIN_FILE=toolchain_GNUARM.cmake
+                -DTFM_TOOLCHAIN_FILE=${tfm_src_dir}/toolchain_GNUARM.cmake
                 -DMCUBOOT_PATH=${tfm_mcuboot_path}
                 -DMBEDCRYPTO_PATH=${tfm_mbedcrypto_path}
+                -DMBEDCRYPTO_VERSION=mbedtls-3.6.6
                 -DQCBOR_PATH=${tfm_qcbor_path}
                 -DCMSIS_PATH=${tfm_cmsis_path}
                 -DIDK_PATH=${tfm_idk_path}
@@ -264,6 +285,8 @@ if (CONFIG_TFM AND tfm_present)
                 -DCONFIG_TFM_SOURCE_PATH=${tfm_src_dir}
                 -DCMAKE_BUILD_TYPE=${CONFIG_TFM_BUILD_TYPE}
                 -DTFM_PROFILE=${CONFIG_TFM_PROFILE}
+                -DTFM_MBEDCRYPTO_CONFIG_PATH=${COMPONENT_DIR}/mbedcrypto_config/tfm_mbedcrypto_config.h
+                -DTFM_MBEDCRYPTO_PSA_CRYPTO_CONFIG_PATH=${COMPONENT_DIR}/mbedcrypto_config/crypto_config_psa.h
                 -DTFM_ISOLATION_LEVEL=${CONFIG_TFM_ISOLATION_LEVEL}
                 -DBL2=${CONFIG_TFM_BL2}
                 -DBL2_DOWNLOAD=${CONFIG_TFM_BL2_DOWNLOAD}
@@ -273,7 +296,6 @@ if (CONFIG_TFM AND tfm_present)
                 -DMCUBOOT_UPGRADE_STRATEGY=${CONFIG_BL2_UPGRADE_STRATEGY}
                 -DCONFIG_DEBUG_OTA_INSTALL=${CONFIG_DEBUG_OTA_INSTALL}
                 -DCONFIG_XIP_NO_VERSION=${CONFIG_XIP_NO_VERSION}
-                -DCONFIG_XIP_FORCE_SLOT_A=${CONFIG_XIP_FORCE_SLOT_A}
                 -DCONFIG_TFM_LOG_LEVEL=${CONFIG_TFM_LOG_LEVEL}
                 -DMCUBOOT_LOG_LEVEL=${CONFIG_TFM_BL2_LOG_LEVEL}
                 -DPARTITION_HDR_DIR=${partition_hdr_dir}
@@ -288,7 +310,8 @@ if (CONFIG_TFM AND tfm_present)
                 -DCONFIG_REG_ACCESS_NSC=${CONFIG_TFM_REG_ACCESS_NSC}
                 -DCONFIG_AP_BOOT_NSC=${CONFIG_TFM_AP_BOOT_NSC}
                 -DCONFIG_SLEEP_RETENTION_NSC=${CONFIG_TFM_SLEEP_RETENTION_NSC}
-            && cd ${tfm_build_dir} && ninja -- install
+                -DCONFIG_OTP_NSC=${CONFIG_TFM_OTP_NSC}
+            && ninja -C ${tfm_build_dir} install
         BUILD_BYPRODUCTS ${tfm_build_dir}/secure_fw/libtfm_s_veneers.a
         BUILD_ALWAYS 1
         INSTALL_COMMAND ""

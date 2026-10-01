@@ -330,7 +330,7 @@ __IRAM_SEC static int adc_pm_restore_cb(uint64_t sleep_time, void *args)
 static bk_err_t adc_set_default_cali_val(struct sadc_data *data)
 {
     const uint16_t cali_val[SARADC_CALIBRATE_MAX] = {
-        0, 0x1481, 0x279D, ADC_TEMP_CODE_DFT_25DEGREE, ADC_TMEP_LSB_PER_10DEGREE /* 1Volt, 2Volt, 25Degree, 10Step*/
+        0x6CA, 0x15BD, 0x2B10, ADC_TEMP_CODE_DFT_25DEGREE, ADC_TMEP_LSB_PER_10DEGREE /* 1Volt, 2Volt, 25Degree, 10Step*/
     };
 
     os_memcpy(data->sadc_cali_val, cali_val, sizeof(cali_val));
@@ -897,6 +897,12 @@ bk_err_t bk_adc_driver_init(void)
     #endif
 
     adc_set_default_cali_val(&dev->data);
+
+#if CONFIG_TEMPERATURE_HIGH_VOLT
+    sys_drv_set_temp_mode(true);
+#else
+    sys_drv_set_temp_mode(false);
+#endif
     bk_int_isr_register(INT_SRC_SARADC, adc_isr, NULL);
 
     sys_hal_set_saradc_cali_config();
@@ -1130,7 +1136,8 @@ UINT32 saradc_set_calibrate_val(uint16_t *value, SARADC_MODE mode)
     }
     irq_level = rtos_disable_int();
 
-    if (mode == SARADC_CALIBRATE_LOW) {
+    if (mode == SARADC_CALIBRATE_LOW)
+    {
         threshold = bk_adc_get_1Volt_threshold();
         dft_value = bk_adc_get_1Volt_value();
         if ((*value + threshold < dft_value) || (dft_value + threshold < *value)) {
@@ -1139,7 +1146,9 @@ UINT32 saradc_set_calibrate_val(uint16_t *value, SARADC_MODE mode)
         if (!dev->adc_cali_invalid) {
             data->sadc_cali_val[mode] = *value;
         }
-    } else if (mode == SARADC_CALIBRATE_HIGH) {
+    }
+    else if (mode == SARADC_CALIBRATE_HIGH)
+    {
         threshold = bk_adc_get_2Volt_threshold();
         dft_value = bk_adc_get_2Volt_value();
         if ((*value + threshold < dft_value) || (dft_value + threshold < *value)) {
@@ -1148,13 +1157,17 @@ UINT32 saradc_set_calibrate_val(uint16_t *value, SARADC_MODE mode)
         if (!dev->adc_cali_invalid) {
             data->sadc_cali_val[mode] = *value;
         }
-    } else if (mode == SARADC_CALIBRATE_TEMP_CODE25) {
+    }
+    else if (mode == SARADC_CALIBRATE_TEMP_CODE25)
+    {
         threshold = bk_adc_get_temp_code_dft_threshold();
         dft_value = bk_adc_get_temp_code_dft_25degree();
         if ((dft_value <= *value + threshold) && (*value <= dft_value + threshold)) {
             data->sadc_cali_val[mode] = *value;
         }
-    } else {
+    }
+    else
+    {
         data->sadc_cali_val[mode] = *value;
     }
 

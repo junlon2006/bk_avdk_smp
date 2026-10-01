@@ -262,7 +262,9 @@ armino_component_register(SRCS "${srcs}"
 
 get_filename_component(config_component_name ${CMAKE_CURRENT_LIST_DIR} NAME)
 armino_component_get_target(target "${config_component_name}")
-set_local_library_compile_option(${target})
+if(srcs)
+	set_local_library_compile_option(${target})
+endif()
 
 if (CONFIG_BLUETOOTH_AP)
     #host: <libbluetooth_host_ble|libbluetooth_host_dm_(bt|ble|dual)>[_nspe].a
@@ -302,8 +304,8 @@ if (CONFIG_BLUETOOTH_AP)
         list(APPEND bluetooth_elem ${bt_host_basename})
     endif()
 
-    message("WARINIG bt_host_exist ${bt_host_exist}")
-    message("WARINIG bt_host_basename ${bt_host_basename}")
+    message(STATUS "bt_host_exist ${bt_host_exist}")
+    message(STATUS "bt_host_basename ${bt_host_basename}")
 
 	foreach(lib_name ${bluetooth_elem})
 		#message("WARINIG lib_name ${ARMINO_PATH}/components/bk_libs/${ARMINO_SOC}/libs/${lib_name}")

@@ -801,7 +801,11 @@ bk_err_t bk_wlan_start_sta(network_InitTypeDef_st *inNetworkInitPara)
 	}
 
 	/* set network parameters: ssid, passphase */
-	wlan_sta_set((uint8_t *)inNetworkInitPara->wifi_ssid, os_strlen(inNetworkInitPara->wifi_ssid), (uint8_t *)inNetworkInitPara->wifi_key);
+	wlan_sta_set(
+#if CONFIG_QUICK_TRACK
+	inNetworkInitPara,
+#endif
+	(uint8_t *)inNetworkInitPara->wifi_ssid, os_strlen(inNetworkInitPara->wifi_ssid), (uint8_t *)inNetworkInitPara->wifi_key);
 
 	if (bk_feature_bssid_connect_enable()) {
 		/* set bssid */
@@ -924,7 +928,11 @@ void bk_wlan_phy_show_cca(void)
  * @note This way is only adapted to join an OPEN, WPA-PSK, WPA2-PSK or
  *       WPA-PSK/WPA2-PSK network.
  */
-int wlan_sta_set(const uint8_t *ssid, uint8_t ssid_len, const uint8_t *psk)
+int wlan_sta_set(
+#if CONFIG_QUICK_TRACK
+	network_InitTypeDef_st *network,
+#endif
+	uint8_t *ssid, uint8_t ssid_len, uint8_t *psk)
 {
 	if ((!bk_feature_bssid_connect_enable() && (ssid == NULL || ssid_len == 0)) || ssid_len > WLAN_SSID_MAX_LEN) {
 		WPA_LOGW("invalid ssid (%p, %u)\n", ssid, ssid_len);
@@ -953,6 +961,11 @@ int wlan_sta_set(const uint8_t *ssid, uint8_t ssid_len, const uint8_t *psk)
 
 		/* key_mgmt: PSK */
 		config.field = WLAN_STA_FIELD_KEY_MGMT;
+#if CONFIG_QUICK_TRACK
+		if (network) {
+			config.u.key_mgmt = network->key_mgmt;
+		} else {
+#endif /* CONFIG_QUICK_TRACK */
 		config.u.key_mgmt = WPA_KEY_MGMT_PSK;
 #ifdef CONFIG_IEEE80211W
 		config.u.key_mgmt |= WPA_KEY_MGMT_PSK_SHA256;
@@ -969,26 +982,53 @@ int wlan_sta_set(const uint8_t *ssid, uint8_t ssid_len, const uint8_t *psk)
 #ifdef CONFIG_WAPI_SUPPORT
 		config.u.key_mgmt |= WPA_KEY_MGMT_WAPI_PSK;
 #endif
-
+#if CONFIG_QUICK_TRACK
+		}
+#endif /* CONFIG_QUICK_TRACK */
 		BK_RETURN_ON_ERR(wpa_ctrl_request(WPA_CTRL_CMD_STA_SET, &config));
 
 		/* proto: WPA | RSN */
 		config.field = WLAN_STA_FIELD_PROTO;
+#if CONFIG_QUICK_TRACK
+		if (network) {
+			config.u.proto = network->proto;
+		} else {
+#endif
 		config.u.proto = WPA_PROTO_WPA | WPA_PROTO_RSN;
 #ifdef CONFIG_WAPI_SUPPORT
 		config.u.proto |= WPA_PROTO_WAPI;
 #endif
+#if CONFIG_QUICK_TRACK
+		}
+#endif /* CONFIG_QUICK_TRACK */
 		BK_RETURN_ON_ERR(wpa_ctrl_request(WPA_CTRL_CMD_STA_SET, &config));
 
 		/* pairwise: CCMP | TKIP */
 		config.field = WLAN_STA_FIELD_PAIRWISE_CIPHER;
-		config.u.pairwise_cipher = WPA_CIPHER_CCMP | WPA_CIPHER_TKIP;
+#if CONFIG_QUICK_TRACK
+		if (network) {
+			config.u.pairwise_cipher = network->pairwise_cipher;
+		} else {
+#endif
+		config.u.pairwise_cipher = WPA_CIPHER_CCMP | WPA_CIPHER_TKIP
+								   | WPA_CIPHER_CCMP_256;
+#if CONFIG_QUICK_TRACK
+		}
+#endif /* CONFIG_QUICK_TRACK */
 		BK_RETURN_ON_ERR(wpa_ctrl_request(WPA_CTRL_CMD_STA_SET, &config));
 
 		/* group: CCMP | TKIP | WEP40 | WEP104 */
 		config.field = WLAN_STA_FIELD_GROUP_CIPHER;
+#if CONFIG_QUICK_TRACK
+		if (network) {
+			config.u.pairwise_cipher = network->pairwise_cipher;
+		} else {
+#endif
 		config.u.pairwise_cipher = WPA_CIPHER_CCMP | WPA_CIPHER_TKIP
 								   | WPA_CIPHER_WEP40 | WPA_CIPHER_WEP104;
+#if CONFIG_QUICK_TRACK
+		}
+#endif /* CONFIG_QUICK_TRACK */
 		BK_RETURN_ON_ERR(wpa_ctrl_request(WPA_CTRL_CMD_STA_SET, &config));
 	}
 
@@ -996,6 +1036,15 @@ int wlan_sta_set(const uint8_t *ssid, uint8_t ssid_len, const uint8_t *psk)
 	config.field = WLAN_STA_FIELD_SCAN_SSID;
 	config.u.scan_ssid = ssid && ssid_len;
 	BK_RETURN_ON_ERR(wpa_ctrl_request(WPA_CTRL_CMD_STA_SET, &config));
+
+#if CONFIG_QUICK_TRACK
+	config.field = WLAN_STA_FIELD_MFP;
+	if (network)
+		config.u.ieee80211w = network->ieee80211w;
+	else
+		config.u.ieee80211w = MGMT_FRAME_PROTECTION_OPTIONAL;
+	BK_RETURN_ON_ERR(wpa_ctrl_request(WPA_CTRL_CMD_STA_SET, &config));
+#endif
 
 	return BK_OK;
 }
@@ -1199,6 +1248,11 @@ int wlan_sta_connect(int chan)
 int wlan_sta_disconnect(void)
 {
 	return wpa_ctrl_request(WPA_CTRL_CMD_STA_DISCONNECT, NULL);
+}
+
+int wlan_sta_reassoicate(void)
+{
+	return wpa_ctrl_request(WPA_CTRL_CMD_STA_REASSOCIATE, NULL);
 }
 
 /**
@@ -2105,19 +2159,48 @@ static void fc_info_dec(struct wlan_fast_connect_info *fci)
 bool g_is_get_fci_from_flash = true;
 bool g_is_use_fci_from_flash = true;
 struct wlan_fast_connect_info g_fci;
+
+static bool wlan_fci_match_sta(const struct wlan_fast_connect_info *fci,
+			       const wifi_sta_config_t *sta)
+{
+	int ssid_len;
+	int req_ssid_len;
+	bool ssid_ok;
+	bool bssid_ok;
+	bool pwd_ok;
+
+	ssid_len = os_strlen((char *)fci->ssid);
+	if (ssid_len > SSID_MAX_LEN)
+		ssid_len = SSID_MAX_LEN;
+	req_ssid_len = os_strlen(sta->ssid);
+	if (req_ssid_len > SSID_MAX_LEN)
+		req_ssid_len = SSID_MAX_LEN;
+
+	ssid_ok = (ssid_len == req_ssid_len && ssid_len > 0 &&
+		   os_memcmp(sta->ssid, fci->ssid, ssid_len) == 0);
+	/* Require non-zero BSSID on both sides to avoid 00:00:.. false match. */
+	bssid_ok = !is_zero_ether_addr(sta->bssid) &&
+		   !is_zero_ether_addr(fci->bssid) &&
+		   os_memcmp(sta->bssid, fci->bssid, 6) == 0;
+	pwd_ok = (os_strcmp(sta->password, (char *)fci->pwd) == 0) ||
+		 (os_strcmp(sta->password, (char *)fci->psk) == 0);
+	return (ssid_ok || bssid_ok) && pwd_ok;
+}
+
 void wlan_read_fast_connect_info(struct wlan_fast_connect_info *fci)
 {
-	/* read fast connect info from flash */
-	if(g_is_get_fci_from_flash && g_is_use_fci_from_flash)
-	{
-		//get_net_info(FAST_CONNECT_ITEM, (UINT8 *)fci, NULL, NULL);
-		#if (CONFIG_EASY_FLASH && CONFIG_EASY_FLASH_V4)
-		bk_get_env_enhance("fast_connect_id", (void *)fci, sizeof(struct wlan_fast_connect_info));
-		#endif
-	}
+	/*
+	 * Prefer easy_flash when enabled; otherwise (and for user_fast_connect)
+	 * use runtime g_fci so host get_config can export materials without
+	 * CONFIG_EASY_FLASH (e.g. Tuya own storage).
+	 */
+#if (CONFIG_EASY_FLASH && CONFIG_EASY_FLASH_V4)
+	if (g_is_get_fci_from_flash && g_is_use_fci_from_flash)
+		bk_get_env_enhance("fast_connect_id", (void *)fci,
+				   sizeof(struct wlan_fast_connect_info));
 	else
+#endif
 		os_memcpy((UINT8 *)fci, &g_fci, sizeof(struct wlan_fast_connect_info));
-
 
 #if defined(CONFIG_FAST_CONNECT_INFO_ENC_METHOD) && (CONFIG_FAST_CONNECT_INFO_ENC_METHOD != ENC_METHOD_NULL)
 	/* decrypt fast connect info */
@@ -2143,16 +2226,13 @@ void wlan_write_fast_connect_info(struct wlan_fast_connect_info *fci)
 	fc_info_enc(fci);
 #endif
 
-	/* save encrypted or plain fast connect info to flash */
-	if(g_is_get_fci_from_flash && g_is_use_fci_from_flash)
-	{
-		//save_net_info(FAST_CONNECT_ITEM, (UINT8 *)fci, NULL, NULL);
-		#if (CONFIG_EASY_FLASH && CONFIG_EASY_FLASH_V4)
-		bk_set_env_enhance("fast_connect_id", (void *)fci, sizeof(struct wlan_fast_connect_info));
-		#endif
-	}
-	else
-		os_memcpy(&g_fci, (UINT8 *)fci, sizeof(struct wlan_fast_connect_info));
+#if (CONFIG_EASY_FLASH && CONFIG_EASY_FLASH_V4)
+	if (g_is_get_fci_from_flash && g_is_use_fci_from_flash)
+		bk_set_env_enhance("fast_connect_id", (void *)fci,
+				   sizeof(struct wlan_fast_connect_info));
+#endif
+	/* Always keep g_fci in sync for get_config / no-easy_flash hosts */
+	os_memcpy(&g_fci, (UINT8 *)fci, sizeof(struct wlan_fast_connect_info));
 
 	WIFI_LOGD("writed fci to flash\n");
 wr_exit:
@@ -2162,19 +2242,14 @@ wr_exit:
 void wlan_clear_fast_connect_info(struct wlan_fast_connect_info *fci)
 {
 	g_sta_param_ptr->fast_connect_set = 0;
-	if(fci){
-		if(g_is_get_fci_from_flash && g_is_use_fci_from_flash)
-		{
-			os_memset(fci, 0, sizeof(struct wlan_fast_connect_info));
-			//save_net_info(FAST_CONNECT_ITEM, (UINT8 *)fci, NULL, NULL);
-			#if (CONFIG_EASY_FLASH && CONFIG_EASY_FLASH_V4)
-			bk_set_env_enhance("fast_connect_id", (void *)fci, sizeof(struct wlan_fast_connect_info));
-			#endif
-		}
-		else
-		{
-			os_memset(&g_fci, 0, sizeof(struct wlan_fast_connect_info));
-		}
+	if (fci) {
+		os_memset(fci, 0, sizeof(struct wlan_fast_connect_info));
+#if (CONFIG_EASY_FLASH && CONFIG_EASY_FLASH_V4)
+		if (g_is_get_fci_from_flash && g_is_use_fci_from_flash)
+			bk_set_env_enhance("fast_connect_id", (void *)fci,
+					   sizeof(struct wlan_fast_connect_info));
+#endif
+		os_memset(&g_fci, 0, sizeof(struct wlan_fast_connect_info));
 		WIFI_LOGD("clear fast connect info\n");
 	}
 	if (bk_feature_fast_dhcp_enable()) {
@@ -2377,22 +2452,12 @@ bk_err_t bk_wifi_sta_start(void)
 #endif
 
 	if (bk_feature_fast_connect_enable()) {
-		int ssid_len, req_ssid_len;
-
 		/* Do not reuse fast-connect state from a previous STA configuration. */
 		g_sta_param_ptr->fast_connect_set = 0;
 		g_sta_param_ptr->fast_connect.chann = 0;
 
 		os_memset(&fci, 0, sizeof(fci));
 		wlan_read_fast_connect_info(&fci);
-
-		ssid_len = os_strlen((char *)fci.ssid);
-		if (ssid_len > SSID_MAX_LEN)
-			ssid_len = SSID_MAX_LEN;
-
-		req_ssid_len = os_strlen(sta_config.ssid);
-		if (req_ssid_len > SSID_MAX_LEN)
-			req_ssid_len = SSID_MAX_LEN;
 
 #if 0
 		print_hex_dump("fci: ", &fci, sizeof(fci));
@@ -2401,11 +2466,7 @@ bk_err_t bk_wifi_sta_start(void)
 		WIFI_LOGD("  chan: %d\n", fci.channel);
 		WIFI_LOGD("  desire ssid: |%s|\n", sta_config.ssid);
 #endif
-		if (((ssid_len == req_ssid_len &&
-			os_memcmp(sta_config.ssid, fci.ssid, ssid_len) == 0) ||
-			(os_memcmp(sta_config.bssid, fci.bssid, 6) == 0)) &&
-			((os_strcmp(sta_config.password, (char *)fci.pwd) == 0) ||
-			(os_strcmp(sta_config.password, (char *)fci.psk) == 0))) {
+		if (wlan_fci_match_sta(&fci, &sta_config)) {
 
 			fast_connect = true;
 
@@ -2493,7 +2554,11 @@ bk_err_t bk_wifi_sta_start(void)
 // #endif
 
 	/* set network parameters: ssid, passphase */
-	wlan_sta_set((uint8_t *)sta_config.ssid, os_strlen(sta_config.ssid), (uint8_t *)sta_config.password);
+	wlan_sta_set(
+#if CONFIG_QUICK_TRACK
+	NULL,
+#endif
+	(uint8_t *)sta_config.ssid, os_strlen(sta_config.ssid), (uint8_t *)sta_config.password);
 
 	/*
 	 * let wpa_psk_cal thread to caculate psk.
@@ -2529,6 +2594,8 @@ bk_err_t bk_wifi_sta_start(void)
 	 */
 	if (fast_connect && wpa_key_mgmt_sae(fci.akmp) && fci.pmk_len > 0) {
 		wlan_sta_add_pmksa_cache_entry_t entry = {0};
+		bool pmkid_valid = false;
+		int i;
 
 		if (fci.pmk_len > sizeof(entry.pmk))
 			fci.pmk_len = sizeof(entry.pmk);
@@ -2536,7 +2603,15 @@ bk_err_t bk_wifi_sta_start(void)
 		entry.akmp = fci.akmp;
 		entry.pmk_len = fci.pmk_len;
 		os_memcpy(entry.pmk, fci.pmk, fci.pmk_len);
-		os_memcpy(entry.pmkid, fci.pmkid, sizeof(entry.pmkid));
+		for (i = 0; i < (int)sizeof(fci.pmkid); i++) {
+			if (fci.pmkid[i] != 0) {
+				pmkid_valid = true;
+				break;
+			}
+		}
+		/* All-zero PMKID must not be installed; let pmksa_cache_add derive it. */
+		if (pmkid_valid)
+			os_memcpy(entry.pmkid, fci.pmkid, sizeof(entry.pmkid));
 		wpa_ctrl_request(WPA_CTRL_CMD_STA_ADD_PMKSA_CACHE_ENTRY, &entry);
 		WIFI_LOGI("fast_connect: restore SAE PMK to PMKSA cache, akmp=0x%x len=%d\n",
 			  fci.akmp, fci.pmk_len);
@@ -2637,8 +2712,29 @@ bk_err_t bk_wifi_scan_start(const wifi_scan_config_t *config)
 
 	wlan_sta_scan_param_t scan_param = {0};
 	scan_param.id = (uint32_t)rtos_get_current_thread();
+	wifi_scan_config_t temp_config;
 
 	if (config ) {
+		temp_config = *config;
+		os_memset(temp_config.chan_nb, 0, sizeof(temp_config.chan_nb));
+
+		uint8_t orig_cnt = MIN(config->chan_cnt, WIFI_2BAND_MAX_CHAN_NUM);
+		uint8_t valid_cnt = 0;
+		for (int i = 0; i < orig_cnt; i++) {
+			if (0 == rw_ieee80211_is_scan_rst_in_countrycode(config->chan_nb[i])) {
+				WIFI_LOGI("chan %d not in countrycode, skip\r\n", config->chan_nb[i]);
+				continue;
+			}
+			temp_config.chan_nb[valid_cnt++] = config->chan_nb[i];
+		}
+		if (orig_cnt > 0 && 0 == valid_cnt) {
+			WIFI_LOGE("all configured channels not in countrycode\r\n");
+			return BK_ERR_PARAM;
+		}
+
+		temp_config.chan_cnt = valid_cnt;
+		config = &temp_config;
+
 		ssid_len = MIN(WLAN_SSID_MAX_LEN, os_strlen((char *)config->ssid));
 		scan_param.scan_cc = !!(config->flag & SCAN_TYPE_CC);
 
@@ -2717,9 +2813,30 @@ static int wifi_sta_validate_config(const wifi_sta_config_t *config)
 	if (is_reserved_byte_init(config->reserved, sizeof(config->reserved)) == false)
 		return BK_ERR_WIFI_RESERVED_FIELD;
 
-	if(config->is_user_fast_connect)
-	{
+	if (config->is_user_fast_connect) {
+		bool host_tk_valid = false;
+		int i;
+
+		for (i = 0; i < 16; i++) {
+			if (config->tk[i] != 0) {
+				host_tk_valid = true;
+				break;
+			}
+		}
+
+		/*
+		 * Host self-managed FCI: do not silently merge from CP flash.
+		 * TK is only required for MFP predisauth deauth.
+		 * WPA2 (pmf not required) historically uses password/psk only —
+		 * do not reject empty TK or WPA2 fast-connect breaks.
+		 */
+		if (config->pmf == MGMT_FRAME_PROTECTION_REQUIRED && !host_tk_valid) {
+			WIFI_LOGE("user_fast_connect: host TK is empty (PMF required), reject\n");
+			return BK_ERR_PARAM;
+		}
+
 		g_is_get_fci_from_flash = false;
+		os_memset(&g_fci, 0, sizeof(g_fci));
 		os_memcpy(g_fci.ssid, config->ssid, WIFI_SSID_STR_LEN);
 		os_memcpy(g_fci.bssid, config->bssid, WIFI_BSSID_LEN);
 		os_memcpy(g_fci.pwd, config->password, WIFI_PASSWORD_LEN);
@@ -2732,9 +2849,16 @@ static int wifi_sta_validate_config(const wifi_sta_config_t *config)
 		g_fci.channel = config->channel;
 		g_fci.pmf = config->pmf;
 		g_fci.security = config->security;
-	}
-	else
-	{
+#if CONFIG_WLAN_FAST_CONNECT_WPA3
+		/* Same as WPA2 psk: host passes SAE material via wifi_sta_config_t */
+		if (config->pmk_len > 0 && config->pmk_len <= sizeof(g_fci.pmk)) {
+			g_fci.pmk_len = config->pmk_len;
+			os_memcpy(g_fci.pmk, config->pmk, config->pmk_len);
+			os_memcpy(g_fci.pmkid, config->pmkid, sizeof(g_fci.pmkid));
+			g_fci.akmp = config->akmp;
+		}
+#endif
+	} else {
 		g_is_get_fci_from_flash = true;
 	}
 
@@ -2836,7 +2960,7 @@ static int wifi_sta_get_global_config(wifi_sta_config_t *sta_config)
 	if (!sta_config)
 		return BK_ERR_NULL_PARAM;
 
-	os_memset(sta_config, 0, sizeof(sta_config));
+	os_memset(sta_config, 0, sizeof(*sta_config));
 	os_memcpy(sta_config->ssid, g_sta_param_ptr->ssid.array, g_sta_param_ptr->ssid.length);
 
 #ifdef CONFIG_CONNECT_THROUGH_PSK_OR_SAE_PASSWORD
@@ -2851,6 +2975,28 @@ static int wifi_sta_get_global_config(wifi_sta_config_t *sta_config)
 	}
 
 	os_memcpy(sta_config->password, g_sta_param_ptr->key, g_sta_param_ptr->key_len);
+
+	/*
+	 * Export last FCI material so AP/host can self-manage fast connect
+	 * (WPA2: psk/tk; WPA3: pmk/pmkid/akmp/pmf), same as filling psk for host.
+	 */
+	{
+		struct wlan_fast_connect_info fci = {0};
+
+		wlan_read_fast_connect_info(&fci);
+		if (os_strlen((char *)fci.psk) > 0)
+			os_memcpy(sta_config->psk, fci.psk, sizeof(sta_config->psk));
+		sta_config->pmf = fci.pmf;
+		os_memcpy(sta_config->tk, fci.tk, sizeof(sta_config->tk));
+#if CONFIG_WLAN_FAST_CONNECT_WPA3
+		if (fci.pmk_len > 0 && fci.pmk_len <= sizeof(sta_config->pmk)) {
+			sta_config->pmk_len = fci.pmk_len;
+			os_memcpy(sta_config->pmk, fci.pmk, fci.pmk_len);
+			os_memcpy(sta_config->pmkid, fci.pmkid, sizeof(sta_config->pmkid));
+			sta_config->akmp = fci.akmp;
+		}
+#endif
+	}
 
 #if CONFIG_STA_VSIE
 	if (bk_feature_sta_vsie_enable()) {
@@ -2931,7 +3077,11 @@ static int wifi_sta_set_wpa_config(const wifi_sta_config_t *config)
 	wpa_psk_request(g_sta_param_ptr->ssid.array, g_sta_param_ptr->ssid.length,
 						(char *)g_sta_param_ptr->key, NULL, 0);
 
-	wlan_sta_set((uint8_t *)config->ssid, os_strlen(config->ssid), (uint8_t *)config->password);
+	wlan_sta_set(
+#if CONFIG_QUICK_TRACK
+		NULL,
+#endif
+		(uint8_t *)config->ssid, os_strlen(config->ssid), (uint8_t *)config->password);
 
 #if CONFIG_STA_VSIE
 	if (bk_feature_sta_vsie_enable()) {
@@ -3063,7 +3213,7 @@ bk_err_t bk_wifi_sta_get_config(wifi_sta_config_t *config)
 		return BK_ERR_NULL_PARAM;
 	}
 
-	os_memset(config, 0, sizeof(config));
+	os_memset(config, 0, sizeof(*config));
 
 	if (!wifi_sta_is_configured())
 		return BK_ERR_WIFI_STA_NOT_CONFIG;
@@ -3075,17 +3225,32 @@ bk_err_t bk_wifi_sta_get_config(wifi_sta_config_t *config)
 		os_memcpy(config->bssid, g_sta_param_ptr->fast_connect.bssid, sizeof(config->bssid));
 	}
 
-	if(bk_feature_fast_connect_enable()){
-		os_memcpy(config->bssid, g_fci.bssid, WIFI_BSSID_LEN);
-		os_memcpy(config->psk, g_fci.psk, WIFI_PASSWORD_LEN);
-		os_memcpy(config->ip_addr, g_fci.ip_addr, 4);
-		os_memcpy(config->netmask, g_fci.netmask, 4);
-		os_memcpy(config->gw, g_fci.gw, 4);
-		os_memcpy(config->dns1, g_fci.dns1, 4);
-		os_memcpy(config->tk, g_fci.tk, 16);
-		config->channel = g_fci.channel;
-		config->pmf = g_fci.pmf;
-		config->security = g_fci.security;
+	if (bk_feature_fast_connect_enable()) {
+		struct wlan_fast_connect_info fci = {0};
+
+		/*
+		 * Normal connect persists FCI to flash (not always g_fci).
+		 * Host self-managed save must read via wlan_read_fast_connect_info().
+		 */
+		wlan_read_fast_connect_info(&fci);
+		os_memcpy(config->bssid, fci.bssid, WIFI_BSSID_LEN);
+		os_memcpy(config->psk, fci.psk, WIFI_PASSWORD_LEN);
+		os_memcpy(config->ip_addr, fci.ip_addr, 4);
+		os_memcpy(config->netmask, fci.netmask, 4);
+		os_memcpy(config->gw, fci.gw, 4);
+		os_memcpy(config->dns1, fci.dns1, 4);
+		os_memcpy(config->tk, fci.tk, 16);
+		config->channel = fci.channel;
+		config->pmf = fci.pmf;
+		config->security = fci.security;
+#if CONFIG_WLAN_FAST_CONNECT_WPA3
+		if (fci.pmk_len > 0 && fci.pmk_len <= sizeof(config->pmk)) {
+			config->pmk_len = fci.pmk_len;
+			os_memcpy(config->pmk, fci.pmk, fci.pmk_len);
+			os_memcpy(config->pmkid, fci.pmkid, sizeof(config->pmkid));
+			config->akmp = fci.akmp;
+		}
+#endif
 	}
 
 	//TODO get channel and security type
@@ -3119,10 +3284,12 @@ bk_err_t bk_wifi_sta_get_link_status(wifi_link_status_t *link_status)
 
 	os_memset(link_status, 0, sizeof(wifi_link_status_t));
 	link_status->aid = -1;
+#ifndef CONFIG_WFA_CA
 	if (!wifi_sta_is_connected()) {
 		link_status->state = WIFI_LINKSTATE_STA_DISCONNECTED;
 		return BK_OK;
 	}
+#endif
 
 	//TODO need to convert the link status of status code!!!
 	link_status->state = info.state;

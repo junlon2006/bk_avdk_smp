@@ -48,16 +48,19 @@ bool bk_boot_read_ota_confirm(uint32_t value);
  * (plain int so callers need no Beken type dependency). */
 int bk_boot_write_ota_confirm(uint32_t value);
 
-/* SPE confirm-on-boot: clear the confirm record ONLY when it is armed
- * (OVERWRITE_CONFIRM present and valid), so a normal boot never wears the
- * sector. Mirrors XIP boot_param_confirm(); call from TF-M once the freshly
- * installed image has reached the secure world. */
+/* If armed: erase resume journal (first 4K) then the confirm sector (last 4K).
+ * SPE calls this after a successful boot; BL2 calls it when secondary verify fails. */
 void bk_ota_confirm_clear_if_armed(void);
 
-/* Anti-brick (BL2 only): when boot_go() finds no bootable primary, re-arm the
- * install iff the ota staging slot still holds a valid MCUboot image header, so
- * an empty/corrupt staging slot cannot loop erase -> decompress-garbage -> fail. */
-void bk_boot_rearm_ota_confirm_if_valid(void);
+/* True while an install is in flight, i.e. the resume journal holds at least
+ * one committed block. BL2 uses it to refuse disarming an install that has
+ * already started overwriting primary_all. */
+bool bk_ota_resume_journal_dirty(void);
+
+/* Erase resume journal only (first 4K of ota_control). Keeps OVERWRITE_CONFIRM
+ * so the next boot reinstalls from block 0 instead of trusting a "done" journal
+ * after primary hash/validate failed. */
+void bk_ota_clear_resume_journal(void);
 
 #ifdef __cplusplus
 }

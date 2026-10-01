@@ -248,11 +248,49 @@ static int app_uart_debug_init_todo(void)
 }
 
 #if CONFIG_ETH
+#define ETH_DELAYED_RETRY_MS 1000U
+
 extern int net_eth_start();
+
+static void app_eth_delayed_retry(void *arg)
+{
+	int ret;
+
+	(void)arg;
+	rtos_delay_milliseconds(ETH_DELAYED_RETRY_MS);
+	BK_LOGD(TAG, "ETH delayed retry start after %u ms\n",
+		ETH_DELAYED_RETRY_MS);
+
+	ret = net_eth_start();
+	if (ret == BK_OK)
+		BK_LOGI(TAG, "ETH delayed retry succeeded\n");
+	else
+		BK_LOGE(TAG, "ETH delayed retry failed: %d\n", ret);
+
+	rtos_delete_thread(NULL);
+}
+
 static int app_eth_init(void)
 {
+	beken_thread_t retry_thread = NULL;
+	int ret;
+
 	BK_LOGD(TAG, "ETH init\n");
-	net_eth_start();
+	ret = net_eth_start();
+	if (ret == BK_OK)
+		return BK_OK;
+
+	BK_LOGW(TAG, "ETH initial start failed: %d, scheduling delayed retry\n",
+		ret);
+	ret = rtos_create_thread(&retry_thread,
+		BEKEN_APPLICATION_PRIORITY,
+		"eth_retry",
+		(beken_thread_function_t)app_eth_delayed_retry,
+		2048,
+		NULL);
+	if (ret != BK_OK)
+		BK_LOGE(TAG, "create ETH delayed retry thread failed: %d\n", ret);
+
 	return BK_OK;
 }
 #endif
@@ -266,6 +304,14 @@ int components_init(void);
 int bk_init(void)
 {
     set_ap_startup_index(AP_ENTER_BK_INIT);
+
+#if defined(CONFIG_OS_HEAP_USE_PSRAM)
+	/* Route the default os_malloc/pvPortMalloc heap to AP_PSRAM_HEAP. Done here
+	 * rather than in entry_main(): allocations made by rtos_init() and the early
+	 * driver init must stay on the SRAM heap. os_free() dispatches by address
+	 * range, so pointers from either heap remain valid. */
+	os_heap_enable_psram_default();
+#endif
 
 	components_init();
 
@@ -365,6 +411,15 @@ int bk_init(void)
 
 #if CONFIG_ETH
 	app_eth_init();
+#endif
+
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+	/*
+	 * Cold boot reaches this point only after AP late initialization. Fast
+	 * resume republishes the same state after hardware, CPU3 and registered
+	 * modules have been restored by the CPU2 PM task.
+	 */
+	bk_pm_ap_full_ready_set(true);
 #endif
 
 	BK_LOGD(TAG, "First Boot: %d\r\n", bk_pm_ap_first_boot_get());

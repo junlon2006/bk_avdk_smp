@@ -17,6 +17,7 @@ from .common import *
 from .security import *
 from .ota import *
 from .parse_csv import *
+from .compress import COMPRESS_BLOCK_SZ, OTA_RESUME_MAX_FULL_BLOCKS
 
 SZ_16M = 0x1000000
 FLASH_BASE_ADDR = 0x04000000
@@ -136,10 +137,7 @@ class Partition:
         return self.ota_type == 'OVERWRITE'
 
     def is_xip(self):
-        return self.ota_type in ('XIP', 'XIP_FORCE_A')
-
-    def is_force_slot_a(self):
-        return self.ota_type == 'XIP_FORCE_A'
+        return self.ota_type == 'XIP'
 
     def is_out_of_range(self, addr):
         if (addr >= SZ_16M):
@@ -274,10 +272,6 @@ class Partition:
         if (self.partition_name == 'ota'):
             return
 
-        # XIP_FORCE_A secondary entries reserve space but carry no image.
-        if self.is_secondary and self.is_force_slot_a():
-            return
-
         if self.is_data_partition():
             return
 
@@ -353,7 +347,7 @@ class Partition:
             logging.error(f'partition{self.idx} partition {self.partition_name} size=%x not FLASH sector aligned' %(self.partition_size))
             exit(1)
 
-        if self.is_secondary and not self.is_force_slot_a():
+        if self.is_secondary:
             if (self.partition_size != self.primary_partition.partition_size):
                 logging.error(f'Size of {self.partition_name} and {self.primary_partition.partition_name} not equal')
                 exit(1)
@@ -607,7 +601,7 @@ class Partition:
                     start_address = hex(self.vir_code_offset)
                 logging.debug(f'encrypt {self.partition_name}, startaddress={start_address}, out={self.aes_bin_name}')
                 #print(f'aes_key {aes_key} aes_bits {aes_bits}')
-                cmd = f'python3 {aes_tool} encrypt -infile {self.bin_name} -keywords {aes_key}  -aes {aes_bits} -outfile {self.aes_bin_name} -startaddress {start_address}'
+                cmd = f'{get_python_exe()} {aes_tool} encrypt -infile {self.bin_name} -keywords {aes_key}  -aes {aes_bits} -outfile {self.aes_bin_name} -startaddress {start_address}'
                 run_cmd_not_check_ret(cmd)
             else:
                 self.aes_bin_name = self.bin_name
@@ -658,10 +652,7 @@ class Partitions:
         return self.ota_type == 'OVERWRITE'
 
     def is_xip(self):
-        return self.ota_type in ('XIP', 'XIP_FORCE_A')
-
-    def is_force_slot_a(self):
-        return self.ota_type == 'XIP_FORCE_A'
+        return self.ota_type == 'XIP'
 
     def is_1st_bin_verified_by_bl2(self, partition_name):
         if (self.primary_all_partitions_cnt > 0) and (self.primary_partitions_verified_by_bl2[0] == partition_name):
@@ -739,8 +730,7 @@ class Partitions:
         all_partition.Dbus_en = True
         all_partition.is_all_partition = True
 
-        if (partition_name == 'primary_all') or (
-                partition_name == 'secondary_all' and self.is_force_slot_a()):
+        if partition_name == 'primary_all':
             all_partition.partition_hdr_pad_size = partition_1st.phy_partition_offset - partition_1st.partition_offset
             all_partition.partition_tail_pad_size = (all_partition.partition_offset+all_partition.partition_size) - floor_align(all_partition.partition_offset+all_partition.partition_size, CRC_UNIT_TOTAL_SZ)
 
@@ -903,6 +893,19 @@ class Partitions:
             primary_all = self.find_partition_by_name("primary_all")
             if(primary_all and primary_all.partition_size % (4096) != 0):
                 logging.error("total size of all primary partition should be 4k aligned!")
+                exit(1)
+            # Journal limit only applies when packing a compressed ota image.
+            if p is not None and primary_all:
+                full_blocks = primary_all.partition_size // COMPRESS_BLOCK_SZ
+                if full_blocks > OTA_RESUME_MAX_FULL_BLOCKS:
+                    max_kb = (OTA_RESUME_MAX_FULL_BLOCKS * COMPRESS_BLOCK_SZ) // 1024
+                    logging.error(
+                        f'primary_all size 0x{primary_all.partition_size:x} requires '
+                        f'{full_blocks} full 64KB blocks, but ota_control resume journal '
+                        f'only holds {OTA_RESUME_MAX_FULL_BLOCKS} entries '
+                        f'(max 0x{OTA_RESUME_MAX_FULL_BLOCKS * COMPRESS_BLOCK_SZ:x}, {max_kb}K). '
+                        f'Shrink primary_all or enlarge the journal in BL2/ota_control.')
+                    exit(1)
         elif(self.is_xip()):
             logging.debug("TODO")
         else:
@@ -1225,8 +1228,7 @@ class Partitions:
 
     def gen_bins_for_bl2_signing(self):
         self.gen_bin_for_bl2_signing('primary_all', self.primary_partitions_verified_by_bl2)
-        if not self.is_force_slot_a():
-            self.gen_bin_for_bl2_signing('secondary_all', self.secondary_partitions_verified_by_bl2)
+        self.gen_bin_for_bl2_signing('secondary_all', self.secondary_partitions_verified_by_bl2)
 
     def gen_all_app_global_hdr(self, img_num, img_hdr_list, version, magic_val):
         magic = magic_val.encode()
@@ -1560,10 +1562,6 @@ class Partitions:
         return hdr 
 
     def gen_ota_bin(self, ota_aes_en, aes_key, security_counter):
-        if self.is_force_slot_a():
-            logging.debug('XIP_FORCE_A: skip ota.bin generation')
-            return
-
         idx_list = self.get_pack_idx_list('ota.bin')
         if len(idx_list) == 0:
             logging.debug(f'Skip ota.bin gen')
@@ -1620,7 +1618,7 @@ class Partitions:
             aes_tool = f'{self.tools_dir}/packager_tools/xts_aes.py'
             aes_bits = get_xts_aes_bits(aes_key)
             start_address = hex(phy2virtual(ota_partition.phy_partition_offset, CRC_EN))
-            cmd = f'python3 {aes_tool} encrypt -infile {ota_sign_bin} -keywords {aes_key} -aes {aes_bits} -outfile {aes_bin_name} -startaddress {start_address}'
+            cmd = f'{get_python_exe()} {aes_tool} encrypt -infile {ota_sign_bin} -keywords {aes_key} -aes {aes_bits} -outfile {aes_bin_name} -startaddress {start_address}'
 
             run_cmd_not_check_ret(cmd)
             if CRC_EN == True:

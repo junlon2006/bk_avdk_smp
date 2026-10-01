@@ -136,6 +136,16 @@ void bk_sys_sw_regs_set_hspl_owner(uint8_t res, uint8_t core, uint32_t pc);
 void bk_sys_sw_regs_clear_hspl_owner(uint8_t res);
 void bk_sys_sw_regs_set_ap_cp_hang_dumping(uint32_t value);
 void bk_sys_sw_regs_bump_cp_heartbeat_bumped(void);
+
+/**
+ * @brief Mark that this CP has entered the AP-memory trap dump.
+ *
+ * The AP polls this flag to confirm the handoff was actually dispatched, so it
+ * must be set at the dump entry and never merely on IPC reception.
+ *
+ * @param value Nonzero to mark the takeover, 0 to clear.
+ */
+void bk_sys_sw_regs_set_cp_ap_dump_taken(uint32_t value);
 /**
  * @brief Publish the address of the CP system heap free counter
  *        (FreeRTOS xFreeBytesRemaining) so AP can read it cross-core.
@@ -155,6 +165,12 @@ void bk_sys_sw_regs_set_cp_lwip_mem_info_ptr(uint32_t addr);
  * @param addr Address of the CP-side static bk_uid_snapshot_t instance; 0 clears.
  */
 void bk_sys_sw_regs_set_cp_uid_ptr(uint32_t addr);
+/**
+ * @brief Publish the address of the CP-owned AP exception record slot so the AP
+ *        can persist its exception context into memory that survives the reset.
+ * @param addr Address of the CP-side slot; 0 clears.
+ */
+void bk_sys_sw_regs_set_ap_exception_record_ptr(uint32_t addr);
 /**
  * @brief Update PM info fields selected by mask.
  * @param info Input PM info values.

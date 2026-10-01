@@ -23,6 +23,11 @@
 #include "hal_hw_fih.h"
 #include "hal_sw_fih.h"
 #include "bk_tfm_ppc.h"
+/* Generated OTP2 map (otp_map_2 with per-item security from otp2.csv). Compiled
+ * into platform_s via common/secure/CMakeLists.txt; used to derive the OTP2 MPC
+ * secure/non-secure block LUT. */
+#include "_otp.h"
+#include "otp_s.h"
 
 #define TAG "mpc"
 
@@ -207,6 +212,47 @@ static void ram_mpc_cfg(void)
 	FIH_ASSERT4(iter_count == (ram_mpc_dev_end - MPC_DEV_SMEM0));
 }
 
+/* ---------------------------------------------------------------------------
+ * OTP2 MPC (CP domain)
+ *
+ * OTP2 holds RF calibration, MAC and customer items. The whole bank defaults to
+ * Non-Secure so the Non-Secure world can read it, EXCEPT the blocks covered by
+ * items whose otp2.csv security field is OTP_SECURITY, which stay Secure (only
+ * reachable from the secure world / the OTP NSC gateways). Driven through the CP
+ * MPC driver (MPC_DEV_OTP2) from the generated otp_map_2[].
+ *
+ * MPC granularity is one block; a secure item and a non-secure item that fall
+ * in the same block force the whole block Secure, so secure/non-secure
+ * boundaries in otp2.csv must be block aligned.
+ * ------------------------------------------------------------------------- */
+static void otp2_mpc_cfg(void)
+{
+	uint32_t block_bytes = bk_mpc_get_block_size(MPC_DEV_OTP2);
+	uint32_t max_blocks  = 32u * (bk_mpc_get_max_block_index(MPC_DEV_OTP2) + 1u);
+	uint32_t items = otp_map_2_row();
+	uint32_t item;
+
+	/* Fail-safe baseline: mark the whole OTP2 bank Secure (also the MPC reset
+	 * state). Secure items are never written Non-Secure afterwards, so a key
+	 * block can never be transiently exposed and any error leaves it Secure. */
+	BK_LOG_ON_ERR(bk_mpc_set_secure_attribute(MPC_DEV_OTP2, 0, max_blocks, MPC_BLOCK_SECURE));
+
+	/* Open only the non-secure items (otp2.csv security != OTP_SECURITY) to the
+	 * Non-Secure world. S/NS boundaries in otp2.csv must be block aligned. */
+	for (item = 0; item < items; item++) {
+		uint32_t first, last;
+
+		if (otp_map_2[item].security == OTP_SECURITY) {
+			continue;
+		}
+		first = otp_map_2[item].offset / block_bytes;
+		last  = (otp_map_2[item].offset + otp_map_2[item].allocated_size +
+		         block_bytes - 1u) / block_bytes; /* exclusive */
+		BK_LOG_ON_ERR(bk_mpc_set_secure_attribute(MPC_DEV_OTP2, first * block_bytes,
+		                                          last - first, MPC_BLOCK_NON_SECURE));
+	}
+}
+
 static void cp_mpc_cfg(void)
 {
 	BK_LOG_ON_ERR(bk_mpc_driver_init());
@@ -216,6 +262,7 @@ static void cp_mpc_cfg(void)
 #if CONFIG_TFM_S_JUMP_TO_CPU0_APP || CONFIG_TFM_S_JUMP_TO_TFM_NS
 	ram_mpc_cfg();
 	flash_mpc_cfg();
+	otp2_mpc_cfg();
 #endif
 
 #if (0 == CONFIG_ENABLE_DEBUG)
@@ -232,6 +279,9 @@ int bk_mpc_cfg(void)
 	 * which is off during TF-M static-boundary setup; they are (re)programmed by
 	 * bk_mpc_ap_cfg() from psa_ap_secure_prepare() after CP NS powers the AP up. */
 	cp_mpc_cfg();
+
+	/* Secure-world only: define the whole OTP1 range as secure. */
+	otp_secure_range_enable();
 
 	__DSB();
 	__ISB();

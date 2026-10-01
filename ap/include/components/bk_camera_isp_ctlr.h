@@ -68,12 +68,13 @@ typedef struct
     uint8_t thread_enable;
     uint32_t read_timeout;
     uint8_t channel;
-    beken_semaphore_t req_sem;
     beken_semaphore_t sem;
     beken_thread_t thread;
     void *controller;
     uint8_t *frame;
     uint32_t size;
+    uint32_t frame_size;
+    uint8_t port_id;
 } isp_channel_read_ctx_t;
 
 typedef struct
@@ -98,6 +99,13 @@ typedef struct
  */
 avdk_err_t bk_camera_isp_ctlr_new(bk_isp_camera_ctlr_handle_t *handle);
 
+/**
+ * @brief Create an ISP camera VC mux controller attached to an existing camera controller
+ * @param handle Output VC mux handle
+ * @param camera ISP camera controller handle from bk_camera_isp_ctlr_new
+ * @return AVDK error code
+ */
+avdk_err_t bk_camera_isp_vc_mux_new(bk_isp_camera_vc_mux_handle_t *handle, bk_isp_camera_ctlr_handle_t camera);
 
 #ifdef __cplusplus
 }

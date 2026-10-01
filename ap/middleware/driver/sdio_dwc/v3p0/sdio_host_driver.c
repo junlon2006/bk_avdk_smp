@@ -55,6 +55,18 @@ void sdio_host_dispatch_card_irq(void); /* defined in the generic API section */
 #define INIT_400K     1
 #define MAX_WAIT_STATE_TRANS_TIMES  200
 
+/* Keep the generic host budget unchanged; only SD CMD17 uses the shorter
+ * surprise-removal budget below. */
+#define SDIO_HOST_DEFAULT_TIMEOUT_MS   2000
+#define SDIO_HOST_SD_CMD17_TIMEOUT_MS  500
+#define SDIO_HOST_R1B_TIMEOUT_MS       2000
+#define SDIO_HOST_BUF_READY_SLICE_MS   10
+#define SDIO_SRC_CLOCK_HZ              320000000u
+#define SDIO_SRC_DIV_MIN               4u
+#define SDIO_SRC_DIV_MAX               16u
+#define SDIO_HOST_DIV_MAX              1024u
+#define SDIO_HOST_MAX_CLOCK_HZ         80000000u
+
 uint32 adma3_wr_descriptor_addr[42];
 uint32 adma3_rd_descriptor_addr[42];
 volatile uint8_t CMD_COMPLETE_STATE =0;
@@ -142,51 +154,16 @@ static bk_err_t sdio_host_shared_resource_init(void)
 	return BK_OK;
 }
 
-static bk_err_t sdio_host_shared_resource_deinit(void)
+static void sdio_host_drain_completion_semas(void)
 {
-	uint32_t ret = 0;
-
-	if(s_sdio_cmd_done_sema)
-	{
-		ret = rtos_deinit_semaphore(&s_sdio_cmd_done_sema);
-		if (kNoErr != ret)
-		{
-			SDIOD_LOGE("s_sdio_cmd_done_sema deinit\r\n");
-		}
-		s_sdio_cmd_done_sema = NULL;
-	}
-
-	if(s_sdio_wr_buf_ready_sema)
-	{
-		ret = rtos_deinit_semaphore(&s_sdio_wr_buf_ready_sema);
-		if (kNoErr != ret)
-		{
-			SDIOD_LOGE("s_sdio_wr_buf_ready_sema deinit\r\n");
-		}
-		s_sdio_wr_buf_ready_sema = NULL;
-	}
-
-	if(s_sdio_rd_buf_ready_sema)
-	{
-		ret = rtos_deinit_semaphore(&s_sdio_rd_buf_ready_sema);
-		if (kNoErr != ret)
-		{
-			SDIOD_LOGE("s_sdio_rd_buf_ready_sema deinit\r\n");
-		}
-		s_sdio_rd_buf_ready_sema = NULL;
-	}
-
-	if(s_sdio_data_xfer_done_sema)
-	{
-		ret = rtos_deinit_semaphore(&s_sdio_data_xfer_done_sema);
-		if (kNoErr != ret)
-		{
-			SDIOD_LOGE("s_sdio_data_xfer_done_sema deinit\r\n");
-		}
-		s_sdio_data_xfer_done_sema = NULL;
-	}
-
-	return BK_OK;
+	if (s_sdio_cmd_done_sema)
+		rtos_get_semaphore(&s_sdio_cmd_done_sema, 0);
+	if (s_sdio_wr_buf_ready_sema)
+		rtos_get_semaphore(&s_sdio_wr_buf_ready_sema, 0);
+	if (s_sdio_rd_buf_ready_sema)
+		rtos_get_semaphore(&s_sdio_rd_buf_ready_sema, 0);
+	if (s_sdio_data_xfer_done_sema)
+		rtos_get_semaphore(&s_sdio_data_xfer_done_sema, 0);
 }
 
 bool sdio_host_last_cmd_timeout(void)
@@ -294,9 +271,10 @@ void card_clk_stop(uintptr_t addr)
 	CLK_CTRL_R(addr) =  CLK_CTRL_R(addr) & 0xfffffffb;
 }
 
-void sd_clk_change(uintptr_t addr,uint16 SD_FREQ_SEL)
+bk_err_t sd_clk_change(uintptr_t addr,uint16 SD_FREQ_SEL)
 {
-	uint16 internal_clk_stable;
+	uint32_t wait;
+
 	card_clk_stop(addr);
 
 	CLK_CTRL_R(addr)= CLK_CTRL_R(addr) & 0xfffffff7;//Set CLK_CTRL_R.PLL_ENABLE to 0
@@ -304,16 +282,19 @@ void sd_clk_change(uintptr_t addr,uint16 SD_FREQ_SEL)
 	CLK_CTRL_R(addr) =  CLK_CTRL_R(addr) & 0xffffffdf;
 	CLK_CTRL_R(addr) =  CLK_CTRL_R(addr) | INTERNAL_CLK_EN | PLL_ENABLE;//Set INTERNAL_CLK_EN
 
-	internal_clk_stable = CLK_CTRL_R(addr) & 0x0002;
-	//wait internal clk stable
-	for(int i = 0; i < MAX_WAIT_STATE_TRANS_TIMES; i++) {
-		if(internal_clk_stable != 0) {
+	for (wait = 0; wait < MAX_WAIT_STATE_TRANS_TIMES; wait++) {
+		if (CLK_CTRL_R(addr) & INTERNAL_CLK_STABLE)
 			break;
-		}
 		rtos_delay_milliseconds(1);
+	}
+	if (wait == MAX_WAIT_STATE_TRANS_TIMES) {
+		SDIOD_LOGE("SD clock failed to stabilize, div=%u\r\n",
+			   (unsigned)SD_FREQ_SEL);
+		return BK_ERR_TIMEOUT;
 	}
 
 	card_clk_supply(addr);
+	return BK_OK;
 }
 
 void sd_card_interface_set(uintptr_t addr,uint8 UHS_MODE_SEL)
@@ -332,6 +313,7 @@ int send_cmd(uintptr_t addr, uint8 CMD_INDEX, uint8 RESP_TYPE, uint32 ARGUMENT)
 {
 	uint32 pstate;
 	uint32 resp01;
+	bool wait_busy = (RESP_TYPE == 3);
 
 	s_last_cmd_timeout = false;
 
@@ -360,6 +342,19 @@ int send_cmd(uintptr_t addr, uint8 CMD_INDEX, uint8 RESP_TYPE, uint32 ARGUMENT)
 
 	uint32_t int_level = rtos_disable_int();
 
+	if (wait_busy) {
+		/* Mask and clear an old XFER_COMPLETE before draining its software
+		 * token. Masking at the controller also closes the cross-core ISR
+		 * window that local interrupt disable alone cannot protect. */
+		NORMAL_INT_SIGNAL_EN_R(addr) &= ~XFER_COMPLETE_SIGNAL_EN;
+		NORMAL_INT_STAT_R(addr) = CLR_XFER_COMPLETE_STAT;
+		__DSB();
+		rtos_get_semaphore(&s_sdio_data_xfer_done_sema, 0);
+		DATA_TOUT_ERR_STATE = 0;
+		DATA_CRC_ERR_STATE = 0;
+		DATA_END_BIT_ERR_STATE = 0;
+	}
+
 	/* Clear stale software flags set by the previous command's ISR but
 	 * never cleared (the existing code only clears CMD_TOUT_ERR_STATE
 	 * on the error path of send_cmd). Without this, a CMD_TOUT_ERR
@@ -380,6 +375,14 @@ int send_cmd(uintptr_t addr, uint8 CMD_INDEX, uint8 RESP_TYPE, uint32 ARGUMENT)
 
 	NORMAL_INT_STAT_EN_R(addr)   = NORMAL_INT_STAT_EN_R(addr) | CMD_COMPLETE_STAT_EN;
 	NORMAL_INT_SIGNAL_EN_R(addr) = NORMAL_INT_SIGNAL_EN_R(addr) | CMD_COMPLETE_SIGNAL_EN;
+	if (wait_busy) {
+		/* SDHCI reports the 48-bit R1 response through CMD_COMPLETE, but
+		 * reports release of the R1b DAT0 busy signal through
+		 * XFER_COMPLETE. Arm both before issuing the command so a short busy
+		 * interval cannot complete before the second interrupt is enabled. */
+		NORMAL_INT_STAT_EN_R(addr)   |= XFER_COMPLETE_STAT_EN;
+		NORMAL_INT_SIGNAL_EN_R(addr) |= XFER_COMPLETE_SIGNAL_EN;
+	}
 	ERROR_INT_STAT_EN_R(addr)	= ERROR_INT_STAT_EN_R(addr) | 0x80f;
 	ERROR_INT_SIGNAL_EN_R(addr)  = ERROR_INT_SIGNAL_EN_R(addr) | 0x80f;
 
@@ -417,6 +420,41 @@ int send_cmd(uintptr_t addr, uint8 CMD_INDEX, uint8 RESP_TYPE, uint32 ARGUMENT)
 	resp01 = RESP01_R(addr);
 	//SDIOD_LOGD("resp01[0x%x]\r\n", resp01);
 
+	if (wait_busy) {
+		bool busy_done = false;
+
+		/* For a command with an R1b response, CMD_COMPLETE only means the R1
+		 * bits were received. The operation is not complete until the card
+		 * releases DAT0. On this SDHCI-style controller that is signalled by
+		 * XFER_COMPLETE and reflected by CMD_INHIBIT_DAT clearing. Poll the
+		 * live state as a fallback for a missed interrupt. */
+		for (int i = 0; i < SDIO_HOST_R1B_TIMEOUT_MS; i++) {
+			(void)rtos_get_semaphore(&s_sdio_data_xfer_done_sema, 1);
+			if (sd_card_has_transfer_error())
+				break;
+			if (!(PSTATE_REG_R(addr) & CMD_INHIBIT_DAT)) {
+				busy_done = true;
+				break;
+			}
+		}
+
+		if (!busy_done) {
+			SDIOD_LOGE("CMD%u R1b busy timeout: resp=0x%08x pstate=0x%08x normal=0x%04x error=0x%04x\r\n",
+				(unsigned int)CMD_INDEX, (unsigned int)resp01,
+				(unsigned int)PSTATE_REG_R(addr),
+				(unsigned int)NORMAL_INT_STAT_R(addr),
+				(unsigned int)ERROR_INT_STAT_R(addr));
+			SW_RST_R(addr) |= SW_RST_DAT | SW_RST_CMD;
+			for (int i = 0; i < MAX_WAIT_STATE_TRANS_TIMES; i++) {
+				if ((SW_RST_R(addr) & (SW_RST_DAT | SW_RST_CMD)) == 0)
+					break;
+				rtos_delay_milliseconds(1);
+			}
+			s_last_cmd_timeout = true;
+			return SDIO_CMD_TIMEOUT_RESP;
+		}
+	}
+
 	return resp01;
 }
 
@@ -452,16 +490,24 @@ void emmc_card_init(uintptr_t addr,uint8 ddr_mode)
  * transfer state so the disk_read/disk_write retry (or a soft re-init) can
  * succeed without a power cycle.
  */
-static void sd_card_abort_data_transfer(uintptr_t addr)
+static void sd_card_abort_data_transfer(uintptr_t addr, bool send_stop)
 {
+	uint32_t stop_resp;
+
 	SW_RST_R(addr) |= SW_RST_DAT | SW_RST_CMD;
 	for (int i = 0; i < MAX_WAIT_STATE_TRANS_TIMES; i++) {
 		if ((SW_RST_R(addr) & (SW_RST_DAT | SW_RST_CMD)) == 0)
 			break;
 		rtos_delay_milliseconds(1);
 	}
-	/* CMD12 STOP_TRANSMISSION, R1b (48-bit) response. */
-	send_cmd(addr, 12, 2, 0);
+	/* CMD12 is required only for an interrupted multi-block command
+	 * (CMD18/CMD25). Sending it after CMD17 is both unnecessary and can move a
+	 * recovering card/controller into another unexpected command state. */
+	if (send_stop) {
+		stop_resp = (uint32_t)send_cmd(addr, 12, 3, 0);
+		if (stop_resp == SDIO_CMD_TIMEOUT_RESP)
+			SDIOD_LOGE("CMD12 abort failed\r\n");
+	}
 }
 
 bk_err_t send_mult_data(uintptr_t addr, const uint8_t *data, uint16 BLOCK_SIZE,uint16 BLOCK_CNT,uint16 CMD,uint32 ARGUMENT)
@@ -473,9 +519,7 @@ bk_err_t send_mult_data(uintptr_t addr, const uint8_t *data, uint16 BLOCK_SIZE,u
 
 	/* Drain stale completion signals from a prior aborted transfer (see
 	 * receive_mult_data for the detailed rationale). */
-	rtos_get_semaphore(&s_sdio_cmd_done_sema, 0);
-	rtos_get_semaphore(&s_sdio_wr_buf_ready_sema, 0);
-	rtos_get_semaphore(&s_sdio_data_xfer_done_sema, 0);
+	sdio_host_drain_completion_semas();
 
 	NORMAL_INT_STAT_EN_R(addr)= CMD_COMPLETE_STAT_EN | XFER_COMPLETE_STAT_EN | BUF_WR_READY_STAT_EN;
 	ERROR_INT_STAT_EN_R(addr) = 0x870;
@@ -517,7 +561,7 @@ bk_err_t send_mult_data(uintptr_t addr, const uint8_t *data, uint16 BLOCK_SIZE,u
 		}
 		if((!ready) || sd_card_has_transfer_error()) {
 			sd_card_log_transfer_wait_error(__func__, "s_sdio_wr_buf_ready_sema", ready ? 0 : -1);
-			sd_card_abort_data_transfer(addr);
+			sd_card_abort_data_transfer(addr, true);
 			return BK_FAIL;
 		}
 		while(num<((BLOCK_SIZE>>2)*(block_num+1)))
@@ -533,7 +577,7 @@ bk_err_t send_mult_data(uintptr_t addr, const uint8_t *data, uint16 BLOCK_SIZE,u
 	ret = rtos_get_semaphore(&s_sdio_data_xfer_done_sema, 2000);
 	if((ret != 0) || sd_card_has_transfer_error()) {
 		sd_card_log_transfer_wait_error(__func__, "s_sdio_data_xfer_done_sema", ret);
-		sd_card_abort_data_transfer(addr);
+		sd_card_abort_data_transfer(addr, true);
 		return BK_FAIL;
 	}
 
@@ -559,6 +603,7 @@ int receive_mult_data(uintptr_t addr, uint8_t *data, uint16 BLOCK_SIZE,uint16 BL
 	uint32 read_data;
 	uint32 num=0;
 	uint16 block_num =0;
+	uint32_t timeout_ms = SDIO_HOST_DEFAULT_TIMEOUT_MS;
 
 	sd_card_clear_transfer_error_flags();
 
@@ -571,9 +616,7 @@ int receive_mult_data(uintptr_t addr, uint8_t *data, uint16 BLOCK_SIZE,uint16 BL
 	 * desync (data CRC error followed by a buffer-ready timeout). Clearing
 	 * them here keeps each transfer (and disk_read retries) self-contained.
 	 */
-	rtos_get_semaphore(&s_sdio_cmd_done_sema, 0);
-	rtos_get_semaphore(&s_sdio_rd_buf_ready_sema, 0);
-	rtos_get_semaphore(&s_sdio_data_xfer_done_sema, 0);
+	sdio_host_drain_completion_semas();
 
 	NORMAL_INT_STAT_EN_R(addr) = CMD_COMPLETE_STAT_EN | XFER_COMPLETE_STAT_EN | BUF_RD_READY_STAT_EN;
 	ERROR_INT_STAT_EN_R(addr) = 0x870;
@@ -584,15 +627,25 @@ int receive_mult_data(uintptr_t addr, uint8_t *data, uint16 BLOCK_SIZE,uint16 BL
 	BLOCKCOUNT_R(addr)= BLOCK_CNT;
 	ARGUMENT_R(addr)  = ARGUMENT;
 
-	XFER_MODE_R(addr) = XFR_MODE_RESP_ERRCHK_EN | XFR_MODE_MULTBLK_SEL | XFR_MODE_DATA_READ | XFR_MODE_AUTOCMD12_EN | XFR_MODE_BLKCNT_EN;//0xb2;
+	if (BLOCK_CNT == 1) {
+		/* Single-block read (SD CMD17, SD CMD6 64-byte switch status,
+		 * eMMC CMD8, SDIO CMD53 byte/block): no MULTBLK or Auto-CMD12. */
+		XFER_MODE_R(addr) = XFR_MODE_RESP_ERRCHK_EN | XFR_MODE_DATA_READ;
+		if (CMD == CMD17)
+			timeout_ms = SDIO_HOST_SD_CMD17_TIMEOUT_MS;
+	} else {
+		/* Multi-block PIO (SD CMD18 and other multi-block reads). */
+		XFER_MODE_R(addr) = XFR_MODE_RESP_ERRCHK_EN | XFR_MODE_MULTBLK_SEL |
+			XFR_MODE_DATA_READ | XFR_MODE_AUTOCMD12_EN | XFR_MODE_BLKCNT_EN;
+	}
 	CMD_R(addr) = (CMD<<8) | DATA_PRESENT_SEL | 0x2;
 
 
 	int ret = 0;
-	ret = rtos_get_semaphore(&s_sdio_cmd_done_sema, 2000);
+	ret = rtos_get_semaphore(&s_sdio_cmd_done_sema, timeout_ms);
 	if((ret != 0) || sd_card_has_transfer_error()) {
 		sd_card_log_transfer_wait_error(__func__, "s_sdio_cmd_done_sema", ret);
-		sd_card_abort_data_transfer(addr);
+		sd_card_abort_data_transfer(addr, CMD == CMD18);
 		return BK_FAIL;
 	}
 
@@ -608,8 +661,8 @@ int receive_mult_data(uintptr_t addr, uint8_t *data, uint16 BLOCK_SIZE,uint16 BL
 		 * status) so a missed interrupt is recovered within ~10 ms.
 		 */
 		int ready = 0, slice;
-		for (slice = 0; slice < 200; slice++) {
-			if (rtos_get_semaphore(&s_sdio_rd_buf_ready_sema, 10) == 0) {
+		for (slice = 0; slice < (int)(timeout_ms / SDIO_HOST_BUF_READY_SLICE_MS); slice++) {
+			if (rtos_get_semaphore(&s_sdio_rd_buf_ready_sema, SDIO_HOST_BUF_READY_SLICE_MS) == 0) {
 				ready = 1;
 				break;
 			}
@@ -622,7 +675,7 @@ int receive_mult_data(uintptr_t addr, uint8_t *data, uint16 BLOCK_SIZE,uint16 BL
 		}
 		if(!ready || sd_card_has_transfer_error()) {
 			sd_card_log_transfer_wait_error(__func__, "s_sdio_rd_buf_ready_sema", ready ? 0 : -1);
-			sd_card_abort_data_transfer(addr);
+			sd_card_abort_data_transfer(addr, CMD == CMD18);
 			return BK_FAIL;
 		}
 
@@ -635,10 +688,10 @@ int receive_mult_data(uintptr_t addr, uint8_t *data, uint16 BLOCK_SIZE,uint16 BL
 		}
 	}
 
-	ret = rtos_get_semaphore(&s_sdio_data_xfer_done_sema, 2000);
+	ret = rtos_get_semaphore(&s_sdio_data_xfer_done_sema, timeout_ms);
 	if((ret != 0) || sd_card_has_transfer_error()) {
 		sd_card_log_transfer_wait_error(__func__, "s_sdio_data_xfer_done_sema", ret);
-		sd_card_abort_data_transfer(addr);
+		sd_card_abort_data_transfer(addr, CMD == CMD18);
 		return BK_FAIL;
 	}
 
@@ -647,6 +700,8 @@ int receive_mult_data(uintptr_t addr, uint8_t *data, uint16 BLOCK_SIZE,uint16 BL
 
 bk_err_t adma2_send_data(uintptr_t addr,uint32 SYS_ADDR,uint16 BLOCK_SIZE,uint16 BLOCK_CNT,uint16 CMD,uint32 ARGUMENT)
 {
+	sd_card_clear_transfer_error_flags();
+	sdio_host_drain_completion_semas();
 	send_cmd(SDIO_ACTIVE_BASE, CMD23, 2, BLOCK_CNT);  //CMD23 to set card block cnt
 
 	uint32_t int_level = rtos_disable_int();
@@ -679,14 +734,18 @@ bk_err_t adma2_send_data(uintptr_t addr,uint32 SYS_ADDR,uint16 BLOCK_SIZE,uint16
 	rtos_enable_int(int_level);
 
 	int ret = 0;
-	ret = rtos_get_semaphore(&s_sdio_cmd_done_sema, 2000);
-	if(ret != 0) {
+	ret = rtos_get_semaphore(&s_sdio_cmd_done_sema, SDIO_HOST_DEFAULT_TIMEOUT_MS);
+	if((ret != 0) || sd_card_has_transfer_error()) {
 		SDIOD_LOGE("func %s get sem s_sdio_cmd_done_sema timeout\r\n", __func__);
+		sd_card_abort_data_transfer(addr, CMD == CMD25);
+		return BK_FAIL;
 	}
 
-	ret = rtos_get_semaphore(&s_sdio_data_xfer_done_sema, 2000);
-	if(ret != 0) {
+	ret = rtos_get_semaphore(&s_sdio_data_xfer_done_sema, SDIO_HOST_DEFAULT_TIMEOUT_MS);
+	if((ret != 0) || sd_card_has_transfer_error()) {
 		SDIOD_LOGE("func %s get sem s_sdio_data_xfer_done_sema timeout\r\n", __func__);
+		sd_card_abort_data_transfer(addr, CMD == CMD25);
+		return BK_FAIL;
 	}
 	SDIOD_LOGD("*****Data(ADMA2) Write End*****\r\n");
 
@@ -696,6 +755,8 @@ bk_err_t adma2_send_data(uintptr_t addr,uint32 SYS_ADDR,uint16 BLOCK_SIZE,uint16
 
 bk_err_t adma2_receive_data (uintptr_t addr,uint32 SYS_ADDR,uint16 BLOCK_SIZE,uint16 BLOCK_CNT,uint16 CMD,uint32 ARGUMENT)
 {
+	sd_card_clear_transfer_error_flags();
+	sdio_host_drain_completion_semas();
 	uint32_t int_level = rtos_disable_int();
 	uint32 adma2_rd_descriptor_tbl[2];
 	adma2_rd_descriptor_tbl[0] = ((BLOCK_SIZE * BLOCK_CNT) << 16) | (ADMA2_ATTRIBUTE_ACT_TRAN << 3) | ADMA2_ATTRIBUTE_VALID_EN | ADMA2_ATTRIBUTE_END_EN | ADMA2_ATTRIBUTE_INT_EN;;  //0x8000027;
@@ -728,13 +789,17 @@ bk_err_t adma2_receive_data (uintptr_t addr,uint32 SYS_ADDR,uint16 BLOCK_SIZE,ui
 	rtos_enable_int(int_level);
 
 	int ret = 0;
-	ret = rtos_get_semaphore(&s_sdio_cmd_done_sema, 2000);
-	if(ret != 0) {
+	ret = rtos_get_semaphore(&s_sdio_cmd_done_sema, SDIO_HOST_DEFAULT_TIMEOUT_MS);
+	if((ret != 0) || sd_card_has_transfer_error()) {
 		SDIOD_LOGE("func %s: get sem s_sdio_cmd_done_sema timeout\r\n", __func__);
+		sd_card_abort_data_transfer(addr, CMD == CMD18);
+		return BK_FAIL;
 	}
-	ret = rtos_get_semaphore(&s_sdio_data_xfer_done_sema, 2000);
-	if(ret != 0) {
+	ret = rtos_get_semaphore(&s_sdio_data_xfer_done_sema, SDIO_HOST_DEFAULT_TIMEOUT_MS);
+	if((ret != 0) || sd_card_has_transfer_error()) {
 		SDIOD_LOGE("func %s: get sem s_sdio_data_xfer_done_sema timeout\r\n", __func__);
+		sd_card_abort_data_transfer(addr, CMD == CMD18);
+		return BK_FAIL;
 	}
 
 	SDIOD_LOGD("*****Data(ADMA2) Read End*****\r\n");
@@ -778,7 +843,9 @@ bk_err_t mshc_host_init(uintptr_t addr,uint16 sysclk_div,uint16 sdclk_div,uint8 
 	}
 
 	host_ctrl_set(addr,SD_BUS_PWR_VDD1,0x0e,CARD_IS_EMMC,DAT_XFER_WIDTH);//addr,SD_BUS_VOL_VDD1,TOUT_CNT,DAT_XFER_WIDTH
-	sd_clk_change(addr,sdclk_div);
+	ret = sd_clk_change(addr,sdclk_div);
+	if (ret != BK_OK)
+		return ret;
 
 	if(CARD_IS_EMMC == 1)  //EMMC CARD INIT
 	{
@@ -893,7 +960,8 @@ void sdio_dwc_isr0(void)
 	if(normal_int & CMD_COMPLETE_STAT_EN)
 	{
 		//CMD_COMPLETE_STATE = 1;
-		rtos_set_semaphore(&s_sdio_cmd_done_sema);
+		if (s_sdio_cmd_done_sema)
+			rtos_set_semaphore(&s_sdio_cmd_done_sema);
 		//SDIOD_LOGD("CMD_COMP\r\n");
 		NORMAL_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_CMD_COMPLETE_STAT;
 	}
@@ -901,7 +969,8 @@ void sdio_dwc_isr0(void)
 	{
 		//XFER_COMPLETE_STATE = 1;
 		//SDIOD_LOGD("XFER_COMP\r\n");
-		rtos_set_semaphore(&s_sdio_data_xfer_done_sema);
+		if (s_sdio_data_xfer_done_sema)
+			rtos_set_semaphore(&s_sdio_data_xfer_done_sema);
 		NORMAL_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_XFER_COMPLETE_STAT;
 	}
 	if(normal_int & BGAP_EVENT_STAT_EN)
@@ -920,13 +989,15 @@ void sdio_dwc_isr0(void)
 	{
 		//BUF_WR_READY_STATE = 1;
 		//SDIOD_LOGD("BUF_WR_READY\r\n");
-		rtos_set_semaphore(&s_sdio_wr_buf_ready_sema);
+		if (s_sdio_wr_buf_ready_sema)
+			rtos_set_semaphore(&s_sdio_wr_buf_ready_sema);
 		NORMAL_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_BUF_WR_READY_STAT;
 	}
 	if(normal_int & BUF_RD_READY_STAT_EN)
 	{
 		//BUF_RD_READY_STATE = 1;
-		rtos_set_semaphore(&s_sdio_rd_buf_ready_sema);
+		if (s_sdio_rd_buf_ready_sema)
+			rtos_set_semaphore(&s_sdio_rd_buf_ready_sema);
 		//SDIOD_LOGD("BUF_RD_READY\r\n");
 		NORMAL_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_BUF_RD_READY_STAT;
 	}
@@ -1010,7 +1081,8 @@ void sdio_dwc_isr0(void)
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_CMD_TOUT_ERR_STAT;
 		/* Wake up the send_cmd() waiter so fail-fast actually fails
 		 * fast rather than waiting the full 2000ms semaphore timeout. */
-		rtos_set_semaphore(&s_sdio_cmd_done_sema);
+		if (s_sdio_cmd_done_sema)
+			rtos_set_semaphore(&s_sdio_cmd_done_sema);
 	}
 	if(error_int & CMD_CRC_ERR_STAT_EN)
 	{
@@ -1113,6 +1185,11 @@ void sdio_dwc_isr0(void)
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_VENDOR_ERR3_STAT;
 	}
 
+	if (error_int & (DATA_TOUT_ERR_STAT_EN | DATA_CRC_ERR_STAT_EN |
+	    DATA_END_BIT_ERR_STAT_EN | ADMA_ERR_STAT_EN)) {
+		if (s_sdio_data_xfer_done_sema)
+			rtos_set_semaphore(&s_sdio_data_xfer_done_sema);
+	}
 
 	normal_int = NORMAL_INT_STAT_R(SDIO_ACTIVE_BASE);
 	error_int  = ERROR_INT_STAT_R(SDIO_ACTIVE_BASE);
@@ -1230,7 +1307,8 @@ void sdio_dwc_isr1(void)
 		SDIOD_LOGD("CMD_TOUT_ERR\r\n");
 		ERROR_INT_SIGNAL_EN_R(SDIO_ACTIVE_BASE) &= ~CMD_TOUT_ERR_STAT_EN;
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_CMD_TOUT_ERR_STAT;
-		rtos_set_semaphore(&s_sdio_cmd_done_sema);
+		if (s_sdio_cmd_done_sema)
+			rtos_set_semaphore(&s_sdio_cmd_done_sema);
 	}
 	if(error_int & CMD_CRC_ERR_STAT_EN)
 	{
@@ -1322,6 +1400,12 @@ void sdio_dwc_isr1(void)
 		SDIOD_LOGD("VENDOR_ERR3\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_VENDOR_ERR3_STAT;
 	}
+
+	if (error_int & (DATA_TOUT_ERR_STAT_EN | DATA_CRC_ERR_STAT_EN |
+	    DATA_END_BIT_ERR_STAT_EN | ADMA_ERR_STAT_EN)) {
+		if (s_sdio_data_xfer_done_sema)
+			rtos_set_semaphore(&s_sdio_data_xfer_done_sema);
+	}
 }
 
 /* =========================================================================
@@ -1407,8 +1491,9 @@ bk_err_t bk_sdio_host_init(sdio_host_id_t id, const sdio_host_cfg_t *cfg)
 		ret = sdio_host_init();         /* SD path, behavior preserved */
 	}
 
-	s_host_inst[id].initialized = true;
-	s_host_inst[id].is_emmc = is_emmc;
+	s_host_inst[id].initialized = (ret == BK_OK);
+	if (ret == BK_OK)
+		s_host_inst[id].is_emmc = is_emmc;
 	sdio_host_unlock();
 	return ret;
 }
@@ -1419,10 +1504,23 @@ bk_err_t bk_sdio_host_deinit(sdio_host_id_t id)
 		return BK_ERR_PARAM;
 	sdio_host_lock();
 	sdio_host_select(id);
+	NORMAL_INT_SIGNAL_EN_R(s_active_base) = 0;
+	ERROR_INT_SIGNAL_EN_R(s_active_base) = 0;
+	__DSB();
 	sdio_reset();
+	NORMAL_INT_STAT_R(s_active_base) = 0xffff;
+	ERROR_INT_STAT_R(s_active_base) = 0xffff;
+	__DSB();
+	sdio_host_drain_completion_semas();
 	s_host_inst[id].initialized = false;
 	sdio_host_unlock();
-	return sdio_host_shared_resource_deinit();
+
+	/* The completion semaphores are shared by both host instances and touched
+	 * from ISR context. Keep them allocated for the driver lifetime. Destroying
+	 * them on every card unmount created an SMP race: after releasing
+	 * s_host_lock another core could enter init/xfer while this deinit destroyed
+	 * the semaphore, leading to xQueueSemaphoreTake(NULL). */
+	return BK_OK;
 }
 
 bk_err_t bk_sdio_host_reset(sdio_host_id_t id)
@@ -1438,21 +1536,68 @@ bk_err_t bk_sdio_host_reset(sdio_host_id_t id)
 
 bk_err_t bk_sdio_host_set_clock(sdio_host_id_t id, uint32_t freq_hz)
 {
-	uint32_t div;
+	uint32_t requested_hz = freq_hz;
+	uint32_t target_hz;
+	uint32_t best_src_div = 0;
+	uint32_t best_host_div = 0;
+	uint32_t best_total_div = UINT32_MAX;
+	uint32_t actual_hz;
+	bk_err_t ret;
+
 	if (id >= SDIO_HOST_ID_MAX)
 		return BK_ERR_PARAM;
 	if (freq_hz == 0)
 		freq_hz = 400000;
-	div = (80000000u + freq_hz - 1) / freq_hz;   /* base clock 80MHz */
-	if (div)
-		div -= 1;
-	if (div > 0x3ff)
-		div = 0x3ff;
+
+	/*
+	 * Follow the Linux SDHCI clock-selection rule: never exceed the
+	 * requested clock and choose the highest realizable frequency.
+	 *
+	 * BK7259 has two integer dividers:
+	 *   320MHz / source_div / host_div
+	 * The source divider is 4 bits and must keep the MSHC input <=80MHz.
+	 */
+	target_hz = MIN(freq_hz, SDIO_HOST_MAX_CLOCK_HZ);
+
+	for (uint32_t src_div = SDIO_SRC_DIV_MIN;
+	     src_div <= SDIO_SRC_DIV_MAX; src_div++) {
+		uint64_t denominator = (uint64_t)target_hz * src_div;
+		uint32_t host_div =
+			(uint32_t)(((uint64_t)SDIO_SRC_CLOCK_HZ +
+				    denominator - 1u) / denominator);
+		uint32_t total_div;
+
+		if (host_div == 0)
+			host_div = 1;
+		if (host_div > SDIO_HOST_DIV_MAX)
+			continue;
+		total_div = src_div * host_div;
+		if ((total_div < best_total_div) ||
+		    ((total_div == best_total_div) &&
+		     (host_div < best_host_div))) {
+			best_src_div = src_div;
+			best_host_div = host_div;
+			best_total_div = total_div;
+		}
+	}
+	if ((best_src_div == 0) || (best_host_div == 0))
+		return BK_ERR_PARAM;
+
+	actual_hz = SDIO_SRC_CLOCK_HZ / best_total_div;
 	sdio_host_lock();
 	sdio_host_select(id);
-	sd_clk_change(s_active_base, (uint16)div);
+	card_clk_stop(s_active_base);
+	if (id == SDIO_HOST_ID_1)
+		sys_hal_sdio1_set_src_clk_div(best_src_div - 1u);
+	else
+		sys_hal_sdio0_set_src_clk_div(best_src_div - 1u);
+	ret = sd_clk_change(s_active_base, (uint16)(best_host_div - 1u));
 	sdio_host_unlock();
-	return BK_OK;
+
+	SDIOD_LOGI("SD clock request=%uHz target=%uHz actual=%uHz src_div=%u host_div=%u\r\n",
+		   requested_hz ? requested_hz : 400000u, target_hz, actual_hz,
+		   best_src_div, best_host_div);
+	return ret;
 }
 
 bk_err_t bk_sdio_host_set_bus_width(sdio_host_id_t id, sdio_host_bus_width2_t width)
@@ -1477,16 +1622,18 @@ bk_err_t bk_sdio_host_set_bus_width(sdio_host_id_t id, sdio_host_bus_width2_t wi
 bk_err_t bk_sdio_host_set_timing(sdio_host_id_t id, sdio_host_timing_t timing)
 {
 	uint8_t uhs;
+	uint8_t ctrl1;
 	bool is_emmc;
+	bool hs_en = false;
 	if (id >= SDIO_HOST_ID_MAX)
 		return BK_ERR_PARAM;
 	is_emmc = s_host_inst[id].is_emmc;
 	switch (timing) {
-	case SDIO_HOST_TIMING_SDR25:     uhs = UHS_MODE_SDR25; break;
+	case SDIO_HOST_TIMING_SDR25:     uhs = UHS_MODE_SDR25; hs_en = true; break;
 	case SDIO_HOST_TIMING_SDR50:     uhs = UHS_MODE_SDR50; break;
 	case SDIO_HOST_TIMING_SDR104:    uhs = UHS_MODE_SDR104; break;
 	case SDIO_HOST_TIMING_DDR50:     uhs = UHS_MODE_DDR50; break;
-	case SDIO_HOST_TIMING_MMC_HS:    uhs = UHS_MODE_EMMC_HS; break;
+	case SDIO_HOST_TIMING_MMC_HS:    uhs = UHS_MODE_EMMC_HS; hs_en = true; break;
 	case SDIO_HOST_TIMING_MMC_DDR:   uhs = UHS_MODE_EMMC_HSDDR; break;
 	case SDIO_HOST_TIMING_MMC_HS200: uhs = UHS_MODE_EMMC_HS200; break;
 	case SDIO_HOST_TIMING_MMC_HS400: uhs = UHS_MODE_EMMC_HS400; break;
@@ -1498,6 +1645,14 @@ bk_err_t bk_sdio_host_set_timing(sdio_host_id_t id, sdio_host_timing_t timing)
 		emmc_card_interface_set(s_active_base, uhs);
 	else
 		sd_card_interface_set(s_active_base, uhs);
+	/* HIGH_SPEED_EN selects the 3.3V High Speed sampling edge. SDR25 here
+	 * is the SDHCI path used for that mode, not UHS-I 1.8V SDR25. */
+	ctrl1 = HOST_CTRL1_R(s_active_base);
+	if (hs_en)
+		ctrl1 |= HIGH_SPEED_EN;
+	else
+		ctrl1 &= (uint8_t)~HIGH_SPEED_EN;
+	HOST_CTRL1_R(s_active_base) = ctrl1;
 	sdio_host_unlock();
 	return BK_OK;
 }
@@ -1541,6 +1696,13 @@ bk_err_t bk_sdio_host_send_cmd(sdio_host_id_t id, const sdio_host_cmd_t *cmd,
 
 	sdio_host_lock();
 	sdio_host_select(id);
+	if (!s_host_inst[id].initialized ||
+	    s_sdio_cmd_done_sema == NULL ||
+	    (cmd->resp_type == SDIO_HOST_RESP_R1B &&
+	     s_sdio_data_xfer_done_sema == NULL)) {
+		sdio_host_unlock();
+		return BK_ERR_SDIO_HOST_NOT_INIT;
+	}
 	r = (uint32_t)send_cmd(s_active_base, cmd->index,
 			       sdio_host_hw_resp_type(cmd->resp_type), cmd->arg);
 	timeout = sdio_host_last_cmd_timeout();
@@ -1593,6 +1755,14 @@ bk_err_t bk_sdio_host_xfer(sdio_host_id_t id, const sdio_host_cmd_t *cmd,
 
 	sdio_host_lock();
 	sdio_host_select(id);
+	if (!s_host_inst[id].initialized ||
+	    s_sdio_cmd_done_sema == NULL ||
+	    s_sdio_wr_buf_ready_sema == NULL ||
+	    s_sdio_rd_buf_ready_sema == NULL ||
+	    s_sdio_data_xfer_done_sema == NULL) {
+		sdio_host_unlock();
+		return BK_ERR_SDIO_HOST_NOT_INIT;
+	}
 	if (data->dir == SDIO_HOST_XFER_WRITE) {
 		if (data->mode == SDIO_HOST_XFER_DMA_ADMA2)
 			ret = adma2_send_data(s_active_base, (uint32)(uintptr_t)data->buf,

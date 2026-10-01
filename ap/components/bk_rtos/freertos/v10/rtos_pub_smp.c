@@ -28,6 +28,7 @@
 #include <os/mem.h>
 #include "bk_uart.h"
 #include "bk_arch.h"
+#include <modules/pm.h>
 #include <components/system.h>
 #include <driver/gpio.h>
 #include "rtos_impl.h"
@@ -182,10 +183,11 @@ bk_err_t rtos_create_thread_static(beken_thread_t* thread,
                                    void * const TaskTCBBuffer,
                                    uint32_t core_id )
 {
+    beken_thread_t new_thread;
     if ((core_id != 0) && (core_id != 1)) {
         core_id = tskNO_AFFINITY;
     }
-    thread =  (beken_thread_t* )xTaskCreateStaticPinnedToCore( (native_thread_t)function,
+    new_thread =  (beken_thread_t)xTaskCreateStaticPinnedToCore((native_thread_t)function,
                                                                 name,
                                                                 (unsigned short) (stack_size/sizeof( portSTACK_TYPE )),
                                                                 arg,
@@ -193,14 +195,18 @@ bk_err_t rtos_create_thread_static(beken_thread_t* thread,
                                                                 (StackType_t * const)TaskStackBuffer,
                                                                 (StaticTask_t * const)TaskTCBBuffer,
                                                                 core_id );
-     if(thread != NULL )
-     {
+    
+    if(new_thread != NULL )
+    {
+        if (thread != NULL)
+            *thread = new_thread;
+
         return kNoErr;
-     }
-     else
-     {
+    }
+    else
+    {
         return kGeneralErr;
-     }
+    }
 }
 
 
@@ -1265,22 +1271,7 @@ bool rtos_is_queue_empty( beken_queue_t* queue )
 {
     signed portBASE_TYPE result;
 
-#ifdef CONFIG_FREERTOS_ALLOW_OS_API_IN_IRQ_DISABLED
-    if (platform_is_in_interrupt_context() == RTOS_SUCCESS)
-    {
-    //    uint32_t flags = taskENTER_CRITICAL_FROM_ISR();
-        result = xQueueIsQueueEmptyFromISR( *queue );
-    //    taskEXIT_CRITICAL_FROM_ISR(flags);
-    }
-    else
-    {
-    //    taskENTER_CRITICAL();
-        result = xQueueIsQueueEmptyFromISR(*queue);
-    //    taskEXIT_CRITICAL();
-    }
-#else
     result = xQueueIsQueueEmptyFromISR( *queue );
-#endif
 
     return ( result != 0 ) ? true : false;
 }
@@ -1289,22 +1280,7 @@ bool rtos_is_queue_full( beken_queue_t* queue )
 {
     signed portBASE_TYPE result;
 
-#ifdef CONFIG_FREERTOS_ALLOW_OS_API_IN_IRQ_DISABLED
-    if (platform_is_in_interrupt_context() == RTOS_SUCCESS)
-    {
-    //    uint32_t flags = taskENTER_CRITICAL_FROM_ISR();
-        result = xQueueIsQueueFullFromISR( *queue );
-    //    taskEXIT_CRITICAL_FROM_ISR(flags);
-    }
-    else
-    {
-    //    taskENTER_CRITICAL();
-        result = xQueueIsQueueFullFromISR(*queue);
-    //    taskEXIT_CRITICAL();
-    }
-#else
     result = xQueueIsQueueFullFromISR( *queue );
-#endif
 
     return ( result != 0 ) ? true : false;
 }
@@ -2077,6 +2053,9 @@ void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackTy
 
     /* Pass out the array that will be used as the Idle task's stack. */
     *ppxIdleTaskStackBuffer = &uxIdleTaskStack[xCoreID][0];	//@cyg:TODO:temp uses 3 to avoid overflow
+	bk_pm_ap_sram_retention_check_set_idle_stack(
+		&uxIdleTaskStack[0][0],
+		&uxIdleTaskStack[configNUM_CORES][0]);
 	xCoreID++;
 	BK_ASSERT(xCoreID <= configNUM_CORES);
 

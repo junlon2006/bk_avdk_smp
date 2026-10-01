@@ -94,6 +94,15 @@ typedef struct
     uint64_t exception_time_us;
 } bk_exception_t;
 
+typedef struct {
+    uint32_t core_id;
+    uint32_t pc;
+    uint32_t lr;
+    uint32_t sp;
+    uint32_t cfsr;
+    uint32_t hfsr;
+} bk_coredump_minimal_context_t;
+
 /* coredump writer api */
 
 void bk_coredump_writer_init(void);
@@ -117,6 +126,8 @@ void bk_coredump_write_memory(const char *name, uint32_t stack_top, uint32_t sta
 
 void bk_coredump_registers(bk_exception_t *self);
 void bk_coredump_secure_registers(const ap_secure_fault_context_t *context);
+void bk_coredump_capture_minimal_context(
+    bk_exception_t *self, bk_coredump_minimal_context_t *context);
 void bk_exception_handler_from_secure(const ap_secure_fault_context_t *context);
 
 void bk_coredump_write_prompt(const char *format, ...);
@@ -145,6 +156,7 @@ void bk_dump_mstack(void);
 void bk_dump_pstack(void);
 void bk_dump_psram_mem(void);
 
-/* P0-1 path 4: AP-local full-memory dump used as the CP-handoff-failure
- * fallback (registers/stacks + manifest(AP) memory), then the caller resets. */
-void bk_coredump_self_full_memory(void);
+/* P0-1 path 4: AP-local RAM dump used as the CP-handoff-failure fallback
+ * (registers/stacks + manifest(AP) RAM). Peripheral register banks are left to
+ * the caller, which emits them after the end marker; then the caller resets. */
+void bk_coredump_self_ram_memory(void);

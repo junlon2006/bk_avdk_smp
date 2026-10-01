@@ -128,6 +128,11 @@ void lv_gpu_init(uint32_t tess_width, uint32_t tess_height)
 {
     bk_gpu_driver_init();
 
+    if (bk_gpu_vg_lite_apply_mem_config(tess_width, tess_height) == 0) {
+        LOGE("vg_lite mem config failed\n");
+        return;
+    }
+
     vg_lite_init(tess_width, tess_height);
 }
 
@@ -147,6 +152,11 @@ void lv_vendor_disp_lock(void)
 void lv_vendor_disp_unlock(void)
 {
     rtos_unlock_mutex(&g_disp_mutex);
+}
+
+bool lv_vendor_is_initialized(void)
+{
+    return lv_vendor_initialized;
 }
 
 bool lv_vendor_gpu_lock(void)
@@ -516,6 +526,14 @@ void lv_vendor_deinit(void)
         return;
     }
 
+    if (lvgl_task_state == STATE_RUNNING) {
+        if (lv_vendor_is_disp_thread()) {
+            LOGE("%s can not deinit from lvgl task\n", __func__);
+            return;
+        }
+        lv_vendor_stop();
+    }
+
     bk_pm_module_vote_cpu_freq(PM_DEV_ID_LVGL, PM_CPU_FRQ_DEFAULT);
 
 #if CONFIG_LVGL_V8
@@ -544,6 +562,7 @@ void lv_vendor_deinit(void)
 
 #if CONFIG_LVGL_V9
     lv_tick_set_cb(NULL);
+    lv_deinit();
 #endif
 
     ret = rtos_deinit_mutex(&g_disp_mutex);
@@ -593,11 +612,6 @@ void lv_vendor_deinit(void)
 #if LV_USE_USER_DATA
         disp->driver->user_data = NULL;
 #endif
-    }
-#else
-    lv_display_t *disp = lv_display_get_default();
-    if (disp != NULL) {
-        lv_display_set_user_data(disp, NULL);
     }
 #endif
     os_free(vnd_data);

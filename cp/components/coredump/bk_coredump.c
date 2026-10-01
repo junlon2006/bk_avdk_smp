@@ -18,6 +18,7 @@
 #include "multicore_hal.h"
 #include "sys_ll.h"
 #include "sys_ahbp_ll.h"
+#include "sys_sw_regs.h"
 
 /* P1-2: bounded wait for the peer-core stop to be confirmed via reset-status
  * readback before trusting cross-core/cross-domain reads. Fixed behaviour (no
@@ -26,6 +27,19 @@
 #ifndef COREDUMP_STOP_READBACK_TIMEOUT_US
 #define COREDUMP_STOP_READBACK_TIMEOUT_US 2000U
 #endif
+
+/* Upper bound on draining the pending async log from exception context. The log
+ * device can be blocked behind a peer core or a lock held by a stopped core, in
+ * which case an unbounded flush burns the whole watchdog window and the dump is
+ * lost to a reset instead of being printed. */
+#ifndef COREDUMP_LOG_FLUSH_TIMEOUT_US
+#define COREDUMP_LOG_FLUSH_TIMEOUT_US 500000U
+#endif
+
+#define COREDUMP_AON_WDT_REBOOT_TICKS 10U
+#define COREDUMP_AON_WDT_KEY_1ST      0x5A0000U
+#define COREDUMP_AON_WDT_KEY_2ND      0xA50000U
+#define COREDUMP_UNKNOWN_CORE         UINT32_MAX
 
 #if CONFIG_SUPPORT_WWDT
 #include <driver/wwdt.h>
@@ -41,6 +55,7 @@ static volatile bk_assert_info_t s_bk_assert_info;
 static volatile uint32_t s_bk_exception_magic = 0;
 static volatile uint32_t s_core_id = 0;
 volatile uint32_t g_ap_dump_flag = 0;
+static bk_exception_reboot_info_t s_exception_reboot_info;
 
 static hook_func s_wifi_dump_func = NULL;
 static hook_func s_ble_dump_func = NULL;
@@ -51,6 +66,82 @@ void bk_coredump_feed_watchdogs(void)
     bk_wdt_force_feed();
 #endif
 }
+
+static void coredump_capture_primary_context(bk_exception_t *self)
+{
+    bk_coredump_minimal_context_t context;
+
+    bk_coredump_capture_minimal_context(self, &context);
+    s_exception_reboot_info.primary_reason = self->reset_reason;
+    s_exception_reboot_info.secondary_reason = RESET_SOURCE_UNKNOWN;
+    s_exception_reboot_info.primary_core = context.core_id;
+    s_exception_reboot_info.secondary_core = COREDUMP_UNKNOWN_CORE;
+    s_exception_reboot_info.pc = context.pc;
+    s_exception_reboot_info.lr = context.lr;
+    s_exception_reboot_info.sp = context.sp;
+    s_exception_reboot_info.cfsr = context.cfsr;
+    s_exception_reboot_info.hfsr = context.hfsr;
+    bk_misc_persist_exception_reboot_info(&s_exception_reboot_info);
+}
+
+static void coredump_print_primary_context(void)
+{
+    BK_DUMP_OUT(
+        "@PRIMARY_EXCEPTION reason=0x%x core=%u pc=0x%08x lr=0x%08x sp=0x%08x CFSR=0x%08x HFSR=0x%08x\r\n",
+        s_exception_reboot_info.primary_reason,
+        s_exception_reboot_info.primary_core,
+        s_exception_reboot_info.pc,
+        s_exception_reboot_info.lr,
+        s_exception_reboot_info.sp,
+        s_exception_reboot_info.cfsr,
+        s_exception_reboot_info.hfsr);
+}
+
+/* A secondary exception means the primary dump path itself faulted, so nothing
+ * in that path can be trusted any more. Record the reason and reset through the
+ * AON WDT registers directly: no locks, no log device, no bk_reboot_ex(). */
+static __attribute__((noreturn)) void coredump_secondary_reboot(
+    bk_exception_t *self)
+{
+    s_exception_reboot_info.secondary_reason = self->reset_reason;
+    s_exception_reboot_info.secondary_core = rtos_get_core_id();
+    bk_misc_persist_exception_reboot_info(&s_exception_reboot_info);
+
+    REG_WRITE(SOC_AON_WDT_REG_BASE,
+        COREDUMP_AON_WDT_KEY_1ST | COREDUMP_AON_WDT_REBOOT_TICKS);
+    REG_WRITE(SOC_AON_WDT_REG_BASE,
+        COREDUMP_AON_WDT_KEY_2ND | COREDUMP_AON_WDT_REBOOT_TICKS);
+    __DSB();
+
+    while (1) {
+        __NOP();
+    }
+}
+
+#if CONFIG_SHELL_ASYNCLOG
+static bool coredump_log_flush_continue(void *context)
+{
+    uint64_t start_us = *(uint64_t *)context;
+
+    bk_coredump_feed_watchdogs();
+    return (bk_aon_rtc_get_us() - start_us) <
+        COREDUMP_LOG_FLUSH_TIMEOUT_US;
+}
+
+static void coredump_flush_logs(void)
+{
+    uint64_t start_us = bk_aon_rtc_get_us();
+
+    if (!shell_log_flush_controlled(
+        coredump_log_flush_continue, &start_us)) {
+        BK_DUMP_OUT("@LOG_FLUSH_TIMEOUT: pending logs discarded\r\n");
+    }
+}
+#else
+static inline void coredump_flush_logs(void)
+{
+}
+#endif
 
 void bk_coredump_dump_time(uint64_t time_us)
 {
@@ -184,22 +275,27 @@ static void bk_exception_preprocess(bk_exception_t *self)
      * lock taken by bk_coredump_lock() below could spin/assert and trigger a
      * secondary exception. */
     secondary = (s_bk_exception_magic == BK_EXCEPTION_MAGIC);
+    if (secondary) {
+        coredump_secondary_reboot(self);
+    }
+
     s_bk_exception_magic = BK_EXCEPTION_MAGIC;
     s_core_id = rtos_get_core_id();
+    /* Capture and persist the minimal fault context before touching any lock or
+     * log device, so the reason/PC/LR/SP survive even if everything downstream
+     * (peer stop, log flush, full dump) stalls and a watchdog resets us. */
+    coredump_capture_primary_context(self);
+    bk_misc_set_reset_reason(self->reset_reason);
 
     bk_coredump_lock();
-    if (secondary) {
-        BK_DUMP_OUT("A secondary exception occurred, reset_reason: 0x%x\r\n", self->reset_reason);
-        bk_reboot_ex(self->reset_reason);
-    }
+    coredump_print_primary_context();
     coredump_stop_other_cores();
 
 #if CONFIG_SUPPORT_WWDT
     bk_wwdt_driver_deinit();
 #endif
     bk_coredump_feed_watchdogs();
-    bk_misc_set_reset_reason(self->reset_reason);
-    
+
     bk_set_printf_sync(true);  // set printf sync
 }
 
@@ -286,16 +382,32 @@ static void bk_exception_dump_main(bk_exception_t *self)
     bk_coredump_feed_watchdogs();
     bk_coredump_writer_init();
 
+    if (self->secure_context != NULL &&
+        self->reset_reason != RESET_SOURCE_CRASH_ASSERT) {
+        bk_coredump_write_meta_info(COREDUMP_EXCEPTION_INFO, (void *)"SecureFault");
+        bk_coredump_write_meta_info(COREDUMP_BUILD_INFO, (void *)build_version);
+#if CONFIG_SOC_SMP
+        bk_coredump_write_meta_info(COREDUMP_CORE_INFO,
+            (void *)(self->secure_context->core_id & 0x1U));
+#endif
+    } else {
+        bk_coredump_meta_info();
+    }
     /* Header - ALWAYS emitted (Debug and Release): CPU registers, system info
      * (fault type / build / core) and the reboot reason. In a Release build
      * (CONFIG_DUMP_ENABLE=n and no CONFIG_DEBUG_VERSION) this header is the
      * ENTIRE dump: no memory image, no peripheral banks - then reboot. */
-    bk_coredump_meta_info();
     bk_coredump_write_prompt("@dump_format_version: %u\r\n", (unsigned)BK_DUMP_FORMAT_VERSION);
     bk_coredump_dump_time(self->exception_time_us);
     bk_coredump_write_prompt("@reset-reason: 0x%x\r\n", self->reset_reason);
 
-    bk_coredump_registers(self);
+    if (self->secure_context != NULL) {
+        bk_coredump_secure_registers(self->secure_context);
+    } else {
+        bk_coredump_registers(self);
+    }
+
+    coredump_flush_logs();
 
     coredump_prompt_prologue();
 
@@ -323,7 +435,8 @@ static void bk_exception_dump_main(bk_exception_t *self)
     coredump_prompt_info();
 
 #if CONFIG_CM_BACKTRACE
-    if (self->reset_reason != RESET_SOURCE_CRASH_ASSERT) {
+    if (self->reset_reason != RESET_SOURCE_CRASH_ASSERT &&
+        self->secure_context == NULL) {
         bk_coredump_feed_watchdogs();
         cm_backtrace_fault(self->lr, self->sp);
     }
@@ -347,6 +460,18 @@ static void bk_exception_dump_main(bk_exception_t *self)
 void bk_coredump_dump_ap_memory_for_trap(void)
 {
     uint64_t dump_time_us = bk_aon_rtc_get_us();
+
+    /* Confirm the handoff to the waiting AP. This MUST be the first statement:
+     * the AP holds its exception context (and its own watchdog) open until it
+     * sees this flag, and bk_coredump_writer_init() below can block on the
+     * shared UART HSPL. Publishing only after the lock would stretch the AP's
+     * confirmation window by an unbounded amount.
+     *
+     * It is deliberately NOT set in the IPC_AP_TRAP_HANDLE_END RX handler: that
+     * handler ACKs immediately and only queues an event for this task, so an
+     * ACK proves reception, not dispatch. Entering this function is the first
+     * moment the takeover is real. */
+    bk_sys_sw_regs_set_cp_ap_dump_taken(1);
 
 #if CONFIG_SUPPORT_WWDT
     bk_wwdt_driver_deinit();
@@ -384,10 +509,16 @@ void bk_coredump_dump_ap_memory_for_trap(void)
 
 static void bk_exception_postprocess(bk_exception_t *self)
 {
-    if (self->reset_reason != RESET_SOURCE_CRASH_ASSERT) {
-        BK_LOG_FLUSH();
-    }
+    if (self->reset_reason != RESET_SOURCE_CRASH_ASSERT)
+        coredump_flush_logs();
     bk_reboot_ex(self->reset_reason);
+}
+
+static void bk_exception_handler_common(bk_exception_t *exception)
+{
+    bk_exception_preprocess(exception);
+    bk_exception_dump_main(exception);
+    bk_exception_postprocess(exception);
 }
 
 void bk_exception_handler(uint32_t reset_reason, uint32_t lr, uint32_t sp)
@@ -410,15 +541,33 @@ void bk_exception_handler(uint32_t reset_reason, uint32_t lr, uint32_t sp)
         .basepri = __get_BASEPRI(),
         .faultmask = __get_FAULTMASK(),
         .control = __get_CONTROL(),
+        .secure_context = NULL,
         .exception_time_us = exception_time_us,
     };
-    bk_exception_preprocess(&exception);
-    /* Always run: the dump header (registers + system info + reboot reason) is
-     * emitted in EVERY build; the memory image inside bk_exception_dump_main is
-     * itself gated by CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE so a Release
-     * build only produces the minimal header then reboots. */
-    bk_exception_dump_main(&exception);
-    bk_exception_postprocess(&exception);
+
+    bk_exception_handler_common(&exception);
+}
+
+void bk_exception_handler_from_secure(const cp_secure_fault_context_t *context)
+{
+    bool source_secure =
+        (context->flags & CP_SEC_DUMP_FLAG_SOURCE_SECURE) != 0U;
+    uint32_t reset_reason = !source_secure && bk_check_assert()
+        ? RESET_SOURCE_CRASH_ASSERT
+        : RESET_SOURCE_SECURE_FAULT;
+    bk_exception_t exception = {
+        .lr = context->exception_lr,
+        .sp = context->frame_sp,
+        .reset_reason = reset_reason,
+        .primask = context->primask_ns,
+        .basepri = context->basepri_ns,
+        .faultmask = context->faultmask_ns,
+        .control = context->control_ns,
+        .secure_context = context,
+        .exception_time_us = bk_aon_rtc_get_us(),
+    };
+
+    bk_exception_handler_common(&exception);
 }
 
 void bk_assert_handler(const char *func, int line)

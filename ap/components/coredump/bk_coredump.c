@@ -23,6 +23,19 @@
 #define COREDUMP_STOP_READBACK_TIMEOUT_US 2000U
 #endif
 
+#ifndef COREDUMP_LOG_FLUSH_TIMEOUT_US
+#define COREDUMP_LOG_FLUSH_TIMEOUT_US 500000U
+#endif
+
+#define COREDUMP_AON_WDT_REBOOT_TICKS 10U
+#define COREDUMP_AON_WDT_KEY_1ST      0x5A0000U
+#define COREDUMP_AON_WDT_KEY_2ND      0xA50000U
+#define COREDUMP_UNKNOWN_CORE         UINT32_MAX
+
+#ifndef SOC_AON_WDT_REG_BASE
+#define SOC_AON_WDT_REG_BASE (0x44000600U + SOC_ADDR_OFFSET)
+#endif
+
 #if CONFIG_SUPPORT_WWDT
 #include <driver/wwdt.h>
 #include "wwdt_driver.h"
@@ -35,6 +48,7 @@
 static volatile bk_assert_info_t s_bk_assert_info;
 static volatile uint32_t s_bk_exception_magic = 0;
 static volatile uint32_t s_core_id = 0;
+static bk_exception_reboot_info_t s_exception_reboot_info;
 
 static hook_func s_wifi_dump_func = NULL;
 static hook_func s_ble_dump_func = NULL;
@@ -49,6 +63,79 @@ static inline void coredump_feed_watchdogs(void)
     bk_wwdt_force_feed();
 #endif
 }
+
+static void coredump_capture_primary_context(bk_exception_t *self)
+{
+    bk_coredump_minimal_context_t context;
+
+    bk_coredump_capture_minimal_context(self, &context);
+    s_exception_reboot_info.primary_reason = self->reset_reason;
+    s_exception_reboot_info.secondary_reason = RESET_SOURCE_UNKNOWN;
+    s_exception_reboot_info.primary_core = context.core_id;
+    s_exception_reboot_info.secondary_core = COREDUMP_UNKNOWN_CORE;
+    s_exception_reboot_info.pc = context.pc;
+    s_exception_reboot_info.lr = context.lr;
+    s_exception_reboot_info.sp = context.sp;
+    s_exception_reboot_info.cfsr = context.cfsr;
+    s_exception_reboot_info.hfsr = context.hfsr;
+    bk_misc_persist_exception_reboot_info(&s_exception_reboot_info);
+}
+
+static void coredump_print_primary_context(void)
+{
+    BK_DUMP_OUT(
+        "@PRIMARY_EXCEPTION reason=0x%x core=%u pc=0x%08x lr=0x%08x sp=0x%08x CFSR=0x%08x HFSR=0x%08x\r\n",
+        s_exception_reboot_info.primary_reason,
+        s_exception_reboot_info.primary_core,
+        s_exception_reboot_info.pc,
+        s_exception_reboot_info.lr,
+        s_exception_reboot_info.sp,
+        s_exception_reboot_info.cfsr,
+        s_exception_reboot_info.hfsr);
+}
+
+static __attribute__((noreturn)) void coredump_secondary_reboot(
+    bk_exception_t *self)
+{
+    s_exception_reboot_info.secondary_reason = self->reset_reason;
+    s_exception_reboot_info.secondary_core = rtos_get_core_id();
+    bk_misc_persist_exception_reboot_info(&s_exception_reboot_info);
+
+    REG_WRITE(SOC_AON_WDT_REG_BASE,
+        COREDUMP_AON_WDT_KEY_1ST | COREDUMP_AON_WDT_REBOOT_TICKS);
+    REG_WRITE(SOC_AON_WDT_REG_BASE,
+        COREDUMP_AON_WDT_KEY_2ND | COREDUMP_AON_WDT_REBOOT_TICKS);
+    __DSB();
+
+    while (1) {
+        __NOP();
+    }
+}
+
+#if CONFIG_SHELL_ASYNCLOG
+static bool coredump_log_flush_continue(void *context)
+{
+    uint64_t start_us = *(uint64_t *)context;
+
+    coredump_feed_watchdogs();
+    return (bk_aon_rtc_get_us() - start_us) <
+        COREDUMP_LOG_FLUSH_TIMEOUT_US;
+}
+
+static void coredump_flush_logs(void)
+{
+    uint64_t start_us = bk_aon_rtc_get_us();
+
+    if (!shell_log_flush_controlled(
+        coredump_log_flush_continue, &start_us)) {
+        BK_DUMP_OUT("@LOG_FLUSH_TIMEOUT: pending logs discarded\r\n");
+    }
+}
+#else
+static inline void coredump_flush_logs(void)
+{
+}
+#endif
 
 void bk_coredump_dump_time(uint64_t time_us)
 {
@@ -131,23 +218,22 @@ static void bk_exception_preprocess(bk_exception_t *self)
      * lock taken by bk_coredump_lock() below could spin/assert and trigger a
      * secondary exception. */
     secondary = (s_bk_exception_magic == BK_EXCEPTION_MAGIC);
+    if (secondary) {
+        coredump_secondary_reboot(self);
+    }
+
     s_bk_exception_magic = BK_EXCEPTION_MAGIC;
     s_core_id = rtos_get_core_id();
+    coredump_capture_primary_context(self);
+    bk_misc_set_reset_reason(self->reset_reason);
 
     bk_coredump_lock();
-    if (secondary) {
-        BK_DUMP_OUT("A secondary exception occurred, reset_reason: 0x%x\r\n", self->reset_reason);
-        bk_reboot_ex(self->reset_reason);
-    }
+    coredump_print_primary_context();
     coredump_stop_other_cores();
 
     coredump_feed_watchdogs();
-    bk_misc_set_reset_reason(self->reset_reason);
 
     bk_set_printf_sync(true);
-#if CONFIG_SHELL_ASYNCLOG
-    BK_LOG_FLUSH();
-#endif
 }
 
 // print fault type
@@ -224,6 +310,11 @@ static void coredump_notify_cp_begin(void)
 static bk_err_t coredump_notify_cp_end(void)
 {
 #if (CONFIG_CPU_CNT > 1)
+    /* Arm the takeover confirmation BEFORE the request. The shared window
+     * survives a warm reset, so a leftover 1 from the previous crash would
+     * otherwise be read as an instant (false) confirmation. */
+    bk_sys_sw_regs_set_cp_ap_dump_taken(0);
+
     /* P0-1: propagate the handoff result so the caller can fall back to an AP
      * self-dump + reset when the CP does not accept the trap-end request. */
     bk_err_t ret = ipc_send_trap_handle_end();
@@ -419,10 +510,51 @@ static void ap_wait_cp_reboot(uint32_t budget_ms)
     }
 }
 
+/* P0-A: ipc_send_trap_handle_end()'s BK_OK only proves the mailbox write
+ * completed, and the CP's IPC ACK only proves its RX handler ran - that handler
+ * ACKs immediately and merely queues an event for the dump task, so NEITHER is
+ * evidence that the AP-memory dump was ever dispatched. Treating them as such
+ * made a CP that silently never dispatched look like a successful handoff, and
+ * the AP then burned its whole reboot budget before falling back.
+ *
+ * Wait instead for the flag the CP publishes from the dump entry itself, which
+ * is the first instant the takeover is real.
+ *
+ * TUNING: the window only has to cover CP RX-ISR -> event -> context switch into
+ * the highest-priority dump task, which is sub-millisecond on a healthy CP, so
+ * the default leaves ~2 orders of magnitude of margin. It MUST stay short: every
+ * millisecond here is taken from the AP's own fallback dump, which runs with the
+ * watchdogs live. */
+#ifndef CONFIG_AP_HANDOFF_CP_TAKEOVER_WINDOW_MS
+#define CONFIG_AP_HANDOFF_CP_TAKEOVER_WINDOW_MS 200U
+#endif
+#define AP_HANDOFF_CP_TAKEOVER_WINDOW_MS ((uint32_t)CONFIG_AP_HANDOFF_CP_TAKEOVER_WINDOW_MS)
+
+static bool ap_wait_cp_takeover(uint32_t window_ms)
+{
+#if (CONFIG_CPU_CNT > 1)
+    uint64_t start_us = bk_aon_rtc_get_us();
+    uint64_t window_us = (uint64_t)window_ms * 1000ULL;
+
+    do {
+        if (bk_sys_sw_regs_get_cp_ap_dump_taken() != 0U) {
+            return true;
+        }
+        coredump_feed_watchdogs();
+    } while ((bk_aon_rtc_get_us() - start_us) < window_us);
+
+    return false;
+#else
+    (void)window_ms;
+    return false;                          /* no CP to hand off to */
+#endif
+}
+
 static void bk_exception_dump_main(bk_exception_t *self)
 {
 #if CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE
     bk_err_t handoff;
+    const char *fallback_reason;
 #endif
 
     bk_coredump_writer_init();
@@ -452,6 +584,8 @@ static void bk_exception_dump_main(bk_exception_t *self)
         bk_coredump_registers(self);
     }
 
+    coredump_flush_logs();
+
 #if CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE
     /* Full AP memory image + CP handoff: Debug only (or where the
      * self-exception dump is explicitly enabled). */
@@ -478,17 +612,35 @@ static void bk_exception_dump_main(bk_exception_t *self)
     coredump_flush_for_cp_dump();          /* flush PSRAM L2 before CP reads AP RAM */
     handoff = coredump_notify_cp_end();    /* prefer handoff: CP dumps AP mem + resets */
 
-    if (handoff == BK_OK) {
+    if (handoff != BK_OK) {
+        fallback_reason = "send_fail";     /* request never left the AP */
+    } else if (!ap_wait_cp_takeover(AP_HANDOFF_CP_TAKEOVER_WINDOW_MS)) {
+        fallback_reason = "no_takeover";   /* request sent, CP never entered the dump */
+    } else {
+        /* CP confirmed it is dumping AP memory: give it the full budget to
+         * finish and reset the board. Returning means it took over and then
+         * died mid-dump. */
         ap_wait_cp_reboot(AP_HANDOFF_CP_REBOOT_BUDGET_MS);
+        fallback_reason = "cp_no_reboot";
     }
 
-    /* Reached here => the CP rejected the handoff, or did not reset the board
-     * within the budget (CP hung). Take over: AP self-dumps its full memory and
-     * resets deterministically so the failure is never a silent no-dump hang. */
-    BK_DUMP_OUT("@AP_HANDOFF_FAILED: AP self-dump full memory then reset\r\n");
+    /* Reached here => the handoff failed for one of the three reasons above.
+     * Take over: AP self-dumps its full memory and resets deterministically so
+     * the failure is never a silent no-dump hang. */
     bk_coredump_writer_init();             /* re-acquire UART lock (released above) */
-    bk_coredump_self_full_memory();        /* manifest(AP), local reads (path 4) */
-    coredump_prompt_epilogue();            /* end marker before any (debug-only) probe */
+    /* Emit the fallback marker through the coredump writer AFTER the lock is
+     * re-acquired. Written before writer_init it never reached the UART, so a
+     * captured log was indistinguishable from a dump that just stopped. The
+     * reason keeps the three failure modes distinguishable offline. */
+    bk_coredump_write_prompt("@AP_HANDOFF_FAILED: reason=%s, AP self-dump full memory then reset\r\n",
+                             fallback_reason);
+    bk_coredump_self_ram_memory();         /* manifest(AP) RAM, local reads (path 4) */
+    coredump_prompt_epilogue();            /* end marker before hang-prone reads */
+    /* Peripheral banks last: a read of a clock-gated or powered-down bank can
+     * stall the bus until the watchdog resets the chip, so it must not be able
+     * to cost us the RAM image or the end marker. */
+    coredump_feed_watchdogs();
+    bk_dump_peri_regs();
     bk_coredump_writer_deinit();
     coredump_feed_watchdogs();
     bk_reboot_ex(self->reset_reason);      /* AP is the sole reset issuer here */
@@ -509,9 +661,8 @@ static void bk_exception_postprocess(bk_exception_t *self)
      * handoff or AP self-dump), so it normally never returns here. The Release
      * path returns after the minimal header dump, so this is where that build
      * issues the reboot. Keep it as an unconditional fallback reboot for both. */
-    if (self->reset_reason != RESET_SOURCE_CRASH_ASSERT) {
-        BK_LOG_FLUSH();
-    }
+    if (self->reset_reason != RESET_SOURCE_CRASH_ASSERT)
+        coredump_flush_logs();
     bk_reboot_ex(self->reset_reason);
 }
 

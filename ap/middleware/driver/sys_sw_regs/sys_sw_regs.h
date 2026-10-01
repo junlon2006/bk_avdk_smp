@@ -68,6 +68,12 @@ uint32_t bk_sys_sw_regs_get_cp_reset_reason(void);
 uint32_t bk_sys_sw_regs_get_ap_reset_reason(void);
 
 /**
+ * @brief Get the address of the CP-owned AP exception record slot.
+ * @return Slot address, or 0 when the CP has not published it yet.
+ */
+uint32_t bk_sys_sw_regs_get_ap_exception_record_ptr(void);
+
+/**
  * @brief Read the AP heap dump window for the selected heap pool.
  * @param id Heap pool identifier.
  * @param info Output buffer for the shared register contents.
@@ -78,6 +84,17 @@ uint32_t bk_sys_sw_regs_get_ap_extra_dump(uint32_t index, ap_extra_dump_info_t *
 uint32_t bk_sys_sw_regs_get_hspl_owner(uint8_t res, uint8_t *core, uint32_t *pc);
 uint32_t bk_sys_sw_regs_get_ap_cp_hang_dumping(void);
 uint32_t bk_sys_sw_regs_get_cp_heartbeat_bumped(void);
+
+/**
+ * @brief Nonzero once the CP has entered the AP-memory trap dump.
+ *
+ * Positive handoff confirmation for the AP exception path: the mailbox send
+ * return value and its ACK only prove the CP's RX handler ran, not that the
+ * dump was ever dispatched. Cleared by the AP before each handoff request.
+ *
+ * @return 1 if the CP has taken over the dump, otherwise 0.
+ */
+uint32_t bk_sys_sw_regs_get_cp_ap_dump_taken(void);
 
 /**
  * @brief Read PM info snapshot from shared registers.
@@ -136,6 +153,12 @@ void bk_sys_sw_regs_set_hspl_owner(uint8_t res, uint8_t core, uint32_t pc);
 void bk_sys_sw_regs_clear_hspl_owner(uint8_t res);
 void bk_sys_sw_regs_set_ap_cp_hang_dumping(uint32_t value);
 void bk_sys_sw_regs_bump_cp_heartbeat_bumped(void);
+
+/**
+ * @brief Set or clear the CP AP-dump takeover confirmation flag.
+ * @param value Nonzero to mark the takeover, 0 to clear before a new request.
+ */
+void bk_sys_sw_regs_set_cp_ap_dump_taken(uint32_t value);
 
 /**
  * @brief Get the SSPL list.

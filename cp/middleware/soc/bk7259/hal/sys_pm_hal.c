@@ -50,10 +50,16 @@
 #include "FreeRTOS.h"
 //#include "armstar.h"
 #include "deep_lv/deep_lv.h"
+#if CONFIG_SPE
+#include "deep_lv/deep_lv_reserve.h"
+#endif
 #endif
 #if CONFIG_CKMN
 #include <driver/ckmn.h>
 #include "ckmn_reg.h"
+#endif
+#if CONFIG_HSPL
+#include "hspl_driver.h"
 #endif
 #if CONFIG_MPU
 #include "mpu.h"
@@ -719,6 +725,11 @@ static inline uint32_t sys_hal_disable_hf_clock(void)
 
 static inline void sys_hal_restore_hf_clock(volatile uint32_t val)
 {
+#if CONFIG_PSRAM_DATA_RETENTION_ENABLE
+	/* REG5 bit7 is owned by the PSRAM retention path. */
+	uint32_t current = sys_ll_get_ana_reg5_value();
+	val = (val & ~BIT(7)) | (current & BIT(7));
+#endif
 	sys_ll_set_ana_reg5_value(val);
 	SYS_PM_HAL_CPU_BARRIER();
 }
@@ -824,7 +835,7 @@ static inline void sys_hal_deep_sleep_set_vldo(void)
 {
 	sys_ll_set_ana_reg9_aldohp(0);//bit10
 	sys_ll_set_ana_reg9_aloldohp(0);//bit21
-	sys_ll_set_ana_reg9_dldohp(0);//bit2
+	sys_ll_set_ana_reg9_dldohp(1);//bit2
 	sys_ll_set_ana_reg9_hsldo_hp(0);//bit12
 	//ronghui suggest ana0x49[1][2][10][12] 4bit at least 1bit = 1 when deepsleep,otherwise otp will not power on when wakeup
 	sys_ll_set_ana_reg9_coreldo_hp(0);//bit1
@@ -1051,7 +1062,7 @@ static inline void sys_hal_set_low_voltage(pm_sleep_mode_e sleep_mode, volatile 
 	#if CONFIG_LDO_SELF_LOW_POWER_MODE_ENA
 		sys_ll_set_ana_reg9_clk_sel(0); //bit0 0:rosc 1:xtal 32k
 		sys_ll_set_ana_reg9_coreldo_hp(0); //bit1 0:coreldo low power mode
-		sys_ll_set_ana_reg9_dldohp(0); //bit2 0:dldo low power mode
+		sys_ll_set_ana_reg9_dldohp(1); //bit2 0:dldo low power mode
 		sys_ll_set_ana_reg9_aldohp(0); //bit10 0:aldohp low power mode
 		sys_ll_set_ana_reg9_aloldohp(0); //bit21 0:aloldohp low power mode
 	#endif
@@ -1159,6 +1170,7 @@ static inline void sys_hal_set_low_voltage(pm_sleep_mode_e sleep_mode, volatile 
 	//sys_hal_clear_wakeup_status();
 	sys_hal_set_sleep_condition();
 	aon_pmu_ll_set_r0_memchk_bps(1);
+	/* Bitfield write: must not clobber flash_remap_sel (R0 bit4). */
 	aon_pmu_ll_set_r0_fast_boot(1);
 	#if CONFIG_DEEP_LV
 	aon_pmu_hal_set_dlv_startup(0);
@@ -1169,7 +1181,7 @@ static inline void sys_hal_set_low_voltage(pm_sleep_mode_e sleep_mode, volatile 
 	} else {
 		 sys_hal_set_halt_config(PM_MODE_DEEP_SLEEP);
 		 sys_hal_set_power_parameter(PM_MODE_DEEP_SLEEP);
-		 aon_pmu_ll_set_r2_otp_vdd_en(0);// close OTPLDO
+		 //aon_pmu_ll_set_r2_otp_vdd_en(0);// close OTPLDO
 	     #if CONFIG_GPIO_WAKEUP_SUPPORT
 		extern bk_err_t gpio_enable_interrupt_mult_for_wake(void);
 		gpio_enable_interrupt_mult_for_wake();
@@ -1737,9 +1749,10 @@ __IRAM_PM void sys_hal_enter_low_voltage(void)
 	}
 
 	#if CONFIG_SPE
-	bool otp_vdd = aon_pmu_ll_get_r2_otp_vdd_en();
-	aon_pmu_ll_set_r2_otp_vdd_en(0);// close OTPLDO, 1.5uA decrease
+	//bool otp_vdd = aon_pmu_ll_get_r2_otp_vdd_en();
+	//aon_pmu_ll_set_r2_otp_vdd_en(0);// close OTPLDO, 1.5uA decrease
 	#endif
+	sys_ll_set_ana_reg42_dslep_disable(0x1);//0x1: otp not power down when sleep; 0x0: otp power down when sleep;
 	// PM_GPIO_UP(36);//5
 	// PM_GPIO_DOWN(36);
 	uint32_t v_ana_r0 = sys_ll_get_ana_reg0_value();
@@ -1877,6 +1890,11 @@ __IRAM_PM void sys_hal_enter_low_voltage(void)
 		#if CONFIG_PM_CP_DEEP_LV_SRAM_CHECK
 		sys_pm_hal_sram_crc_save();
 		#endif
+		#if CONFIG_SPE
+		/* Capture the repaired words while the repair is still in effect; only
+		 * register writes happen between here and arch_deep_sleep(). */
+		sys_hal_mem_check_bad_point_value_save();
+		#endif
 		/*disable hf clock*/
 
 		/* Keep a single spi_latch session across disable_hf_clock so the AON LDO
@@ -1886,7 +1904,13 @@ __IRAM_PM void sys_hal_enter_low_voltage(void)
 		 * before arch_deep_sleep() - no SRAM/flash access happens after it. */
 		sys_hal_enable_spi_latch();
 		aon_pmu_hal_r0_latch_to_r7b();
+		#if CONFIG_PSRAM_DATA_RETENTION_ENABLE
+		/* Keep the main voltage in its normal mode while halted. Lowering it
+		 * makes the internal PSRAM LDO fall below the retention voltage. */
+		aon_pmu_ll_set_r40_halt_volt(0);
+		#else
 		aon_pmu_ll_set_r40_halt_volt(1);
+		#endif
 
 		hf_reg_v = sys_hal_disable_hf_clock();
 		timer_hal_early_delay_us_iram(10);
@@ -1972,12 +1996,16 @@ __IRAM_PM void sys_hal_enter_low_voltage(void)
 #endif
 
 	#if CONFIG_DEEP_LV
-	#if CONFIG_SPE
-	aon_pmu_ll_set_r2(otp_vdd);// restore OTPLDO
-	#endif
 	uint32_t val;
 	sys_hal_analog_set(ANALOG_REG0, v_ana_r0);
+#if CONFIG_PSRAM_DATA_RETENTION_ENABLE
+	/* Keep the PSRAM I/O-pad latch (REG5 bit7) unchanged. */
+	val = sys_hal_analog_get(ANALOG_REG5);
+	sys_hal_analog_set(ANALOG_REG5,
+		(v_ana_r5 & ~BIT(7)) | (val & BIT(7)));
+#else
 	sys_hal_analog_set(ANALOG_REG5, v_ana_r5);
+#endif
 
 	val = sys_hal_analog_get(ANALOG_REG0);
 	val |= BIT(26);
@@ -2002,7 +2030,18 @@ __IRAM_PM void sys_hal_enter_low_voltage(void)
 	sys_hal_analog_set(ANALOG_REG11, v_ana_r11);
 	sys_hal_analog_set(ANALOG_REG12, v_ana_r12);
 	sys_hal_analog_set(ANALOG_REG13, v_ana_r13);
+#if CONFIG_PSRAM_DATA_RETENTION_ENABLE
+	/*
+	 * Restore only the PSRAM power fields from the pre-sleep snapshot:
+	 * vpsramsel[30:27] and enpsram[31]. Keep all unrelated REG14 fields
+	 * at their current post-wake values.
+	 */
+	val = sys_hal_analog_get(ANALOG_REG14);
+	sys_hal_analog_set(ANALOG_REG14,
+		(val & ~(0x1FU << 27)) | (v_ana_r14 & (0x1FU << 27)));
+#else
 	sys_hal_analog_set(ANALOG_REG14, v_ana_r14);
+#endif
 	sys_hal_analog_set(ANALOG_REG15, 0);
 
 	sys_hal_analog_set(ANALOG_REG16, v_ana_r16);
@@ -2046,6 +2085,11 @@ __IRAM_PM void sys_hal_enter_low_voltage(void)
 	// {
 	// 	sys_ahbp_ll_set_rege_pwd_m55(pwd_m55);
 	// }
+	#if CONFIG_DEEP_LV
+	#if CONFIG_SPE
+	//aon_pmu_ll_set_r2_otp_vdd_en((uint32_t)otp_vdd); /* restore OTPLDO */
+	#endif
+	#endif
 	aon_pmu_ll_set_r0_fast_boot(0);
 	aon_pmu_hal_set_dlv_startup(0);
 #if CONFIG_CKMN
@@ -2218,6 +2262,13 @@ __IRAM_PM void sys_hal_enter_low_voltage(void)
 	#endif
 	sys_hal_restore_core_freq(cksel_core, clkdiv_core, clkdiv_bus);
 	SYS_PM_HAL_CPU_BARRIER();
+
+#if CONFIG_DEEP_LV && CONFIG_HSPL
+	if (bk_hspl_deep_lv_resume_reinit() != BK_OK) {
+		BK_LOGE("pm", "HSPL0 restore after Deep-LV failed\r\n");
+		BK_ASSERT(0);
+	}
+#endif
 
 	#if CONFIG_DEEP_LV_DEBUG_GPIO
 	PM_GPIO_UP(37);//25
